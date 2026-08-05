@@ -2,7 +2,7 @@
 
 Interactive bill splitter for the Moxies Miami receipt (07/31/26, Table 122, Party of 11).
 
-**Live:** https://USERNAME.github.io/splitty/
+**Live:** https://sebsgooey.github.io/splitty/
 
 ## How it works
 
