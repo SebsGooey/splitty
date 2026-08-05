@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Splitty · Moxies Miami</title>
+<meta name="description" content="Split the Moxies Miami bill — pick your items, totals update live.">
+<style>
+  :root {
+    --paper: #fffdf7;
+    --ink: #1a1a1a;
+    --ink-soft: #6b6b60;
+    --bg: #14161b;
+    --accent: #e0523a;
+    --line: #d8d4c6;
+    --radius: 14px;
+    font-size: 16px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    background-image: radial-gradient(ellipse at 50% -10%, #2a2e38 0%, var(--bg) 60%);
+    color: var(--ink);
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+    min-height: 100vh;
+    padding: 16px 10px 80px;
+    display: flex;
+    justify-content: center;
+  }
+  .receipt {
+    width: 100%;
+    max-width: 520px;
+    background: var(--paper);
+    border-radius: 6px 6px var(--radius) var(--radius);
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+    padding: 22px 18px 26px;
+    position: relative;
+  }
+  .receipt::before {
+    content: "";
+    position: absolute; top: -8px; left: 0; right: 0; height: 9px;
+    background: linear-gradient(-45deg, transparent 33.333%, var(--paper) 33.333%, var(--paper) 66.667%, transparent 66.667%),
+                linear-gradient(45deg, transparent 33.333%, var(--paper) 33.333%, var(--paper) 66.667%, transparent 66.667%);
+    background-size: 14px 18px;
+    background-position: 0 0;
+  }
+  header { text-align: center; margin-bottom: 6px; }
+  h1 { font-size: 1.9rem; letter-spacing: .35em; margin: 0; font-weight: 800; }
+  .sub { color: var(--ink-soft); font-size: .78rem; margin-top: 4px; }
+  .rule { border: none; border-top: 2px dashed var(--line); margin: 14px 0; }
+  .rule.thin { border-top-width: 1px; }
+
+  /* People */
+  .section-label {
+    font-size: .72rem; letter-spacing: .18em; color: var(--ink-soft);
+    text-transform: uppercase; margin: 0 0 8px;
+  }
+  #people { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 2px solid var(--pc, #888);
+    color: var(--ink);
+    background: #fff;
+    border-radius: 999px; padding: 7px 12px;
+    font: inherit; font-size: .88rem; font-weight: 700;
+    cursor: pointer; transition: transform .08s, box-shadow .12s;
+  }
+  .chip .dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--pc, #888); flex: none;
+  }
+  .chip.active {
+    background: var(--pc, #888); color: #fff;
+    box-shadow: 0 3px 10px rgba(0,0,0,.25);
+    transform: scale(1.04);
+  }
+  .chip.active .dot { background: #fff; }
+  .chip .rm {
+    margin-left: 2px; opacity: .55; font-weight: 400; padding: 0 2px;
+    font-size: .95em;
+  }
+  .chip .rm:hover { opacity: 1; }
+  #addPersonBtn {
+    border: 2px dashed #b9b4a4; background: transparent; color: var(--ink-soft);
+    border-radius: 999px; padding: 7px 14px; font: inherit; font-size: .88rem;
+    cursor: pointer; font-weight: 700;
+  }
+  #addPersonBtn:hover { color: var(--ink); border-color: var(--ink-soft); }
+  #addForm { display: none; gap: 6px; width: 100%; margin-top: 4px; }
+  #addForm.open { display: flex; }
+  #nameInput {
+    flex: 1; min-width: 0; font: inherit; font-size: .95rem; padding: 8px 12px;
+    border: 2px solid var(--ink); border-radius: 8px; background: #fff;
+  }
+  #addForm button {
+    font: inherit; font-weight: 700; border: none; border-radius: 8px;
+    padding: 8px 14px; cursor: pointer; background: var(--ink); color: #fff;
+  }
+  .hint { font-size: .75rem; color: var(--ink-soft); margin: 10px 0 0; text-align: center; }
+  .hint b { color: var(--accent); }
+
+  /* Items */
+  .cat { margin-top: 14px; }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; text-align: left;
+    background: transparent; border: none; font: inherit; color: inherit;
+    padding: 9px 6px; border-radius: 9px; cursor: pointer;
+    border: 1.5px solid transparent;
+    transition: background .1s, border-color .1s;
+  }
+  .item:active { background: #f1eee2; }
+  .item.mine { background: #fdf0ec; border-color: var(--accent); }
+  .item .name { flex: 1; font-size: .9rem; line-height: 1.25; }
+  .item .name small { display: block; color: var(--ink-soft); font-size: .72rem; }
+  .item .who { display: flex; gap: 3px; flex: none; }
+  .avatar {
+    width: 22px; height: 22px; border-radius: 50%; color: #fff;
+    font-size: .62rem; font-weight: 800; display: inline-flex;
+    align-items: center; justify-content: center; flex: none;
+    border: 1.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+  }
+  .item .price { flex: none; font-size: .9rem; font-weight: 700; min-width: 62px; text-align: right; }
+  .item .split-tag {
+    flex: none; font-size: .68rem; color: var(--accent); font-weight: 800;
+  }
+  .item.unclaimed-dim .price { color: var(--ink); }
+
+  /* Rates */
+  .rates { display: flex; gap: 10px; justify-content: center; }
+  .rates label {
+    display: flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--ink-soft);
+  }
+  .rates input {
+    width: 62px; font: inherit; font-size: .9rem; font-weight: 700; text-align: right;
+    padding: 5px 6px; border: 1.5px solid var(--line); border-radius: 8px; background: #fff;
+  }
+
+  /* Totals */
+  .trow { display: flex; justify-content: space-between; font-size: .92rem; padding: 3px 4px; }
+  .trow.big { font-size: 1.15rem; font-weight: 800; padding-top: 8px; }
+  .trow .lab { color: var(--ink-soft); }
+  .trow.big .lab { color: var(--ink); }
+
+  .person-card {
+    border: 2px solid var(--pc, #888);
+    border-radius: 12px; padding: 10px 12px; margin: 10px 0;
+    background: #fff;
+  }
+  .person-card h3 {
+    margin: 0 0 4px; font-size: .95rem; display: flex; align-items: center; gap: 8px;
+  }
+  .person-card h3 .owes { margin-left: auto; font-size: 1.1rem; }
+  .person-card .mini { font-size: .74rem; color: var(--ink-soft); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; }
+  .person-card ul { margin: 6px 0 0; padding: 0 0 0 2px; list-style: none; font-size: .74rem; color: var(--ink-soft); }
+  .person-card li { display: flex; justify-content: space-between; }
+  .unclaimed-banner {
+    border: 2px dashed var(--accent); color: var(--accent);
+    border-radius: 12px; padding: 10px 12px; margin: 10px 0;
+    font-size: .85rem; font-weight: 700; display: flex; justify-content: space-between;
+  }
+  .allclaimed { color: #2e7d32; border-color: #2e7d32; }
+  .footer-note { text-align: center; color: var(--ink-soft); font-size: .7rem; margin-top: 18px; line-height: 1.5; }
+  .barcode {
+    margin: 14px auto 0; height: 38px; width: 200px;
+    background: repeating-linear-gradient(90deg, var(--ink) 0 2px, transparent 2px 5px, var(--ink) 5px 6px, transparent 6px 9px, var(--ink) 9px 12px, transparent 12px 14px);
+    opacity: .8;
+  }
+  #resetBtn {
+    display: block; margin: 16px auto 0; background: none; border: none;
+    color: var(--ink-soft); font: inherit; font-size: .72rem; cursor: pointer;
+    text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+<main class="receipt">
+  <header>
+    <h1>MOXIES</h1>
+    <div class="sub">MOXIES MIAMI · Table 122 · Party 11 · 07/31/26</div>
+    <div class="sub">— SPLITTY: tap your name, then tap what you had —</div>
+  </header>
+  <hr class="rule">
+
+  <p class="section-label">Who's splitting</p>
+  <div id="people"></div>
+  <form id="addForm" autocomplete="off">
+    <input id="nameInput" type="text" placeholder="Name" maxlength="20" autocomplete="off">
+    <button id="saveName" type="submit">Add</button>
+  </form>
+  <p class="hint" id="hint">Add everyone at the table, <b>select a person</b>, then tap the items they had. Tap again to remove. Shared items split evenly.</p>
+
+  <hr class="rule">
+  <div id="items"></div>
+
+  <hr class="rule">
+  <div class="rates">
+    <label>TAX % <input id="taxPct" type="number" step="0.1" min="0" value="8"></label>
+    <label>TIP % <input id="tipPct" type="number" step="0.1" min="0" value="20"></label>
+  </div>
+
+  <hr class="rule">
+  <div id="billTotals"></div>
+
+  <hr class="rule">
+  <p class="section-label">Each person owes</p>
+  <div id="personTotals"></div>
+
+  <button id="resetBtn">reset everything</button>
+  <div class="barcode"></div>
+  <p class="footer-note">20% service charge has been included!<br>thank you 😊</p>
+</main>
+
+<script>
+"use strict";
+/* All money in integer cents. Receipt verified: items sum to 73700 = printed subtotal. */
+const ITEMS = [
+  { cat: "Drinks", name: "Bacardi White", price: 1200 },
+  { cat: "Drinks", name: "Bacardi White", price: 1200 },
+  { cat: "Drinks", name: "Bacardi White", price: 1200 },
+  { cat: "Drinks", name: "Pornstar Martini", price: 2100 },
+  { cat: "Drinks", name: "Pornstar Martini", price: 2100 },
+  { cat: "Drinks", name: "Pornstar Martini", price: 2100 },
+  { cat: "Drinks", name: "Pornstar Martini", price: 2100 },
+  { cat: "Drinks", name: "Tito's", price: 1950 },
+  { cat: "Drinks", name: "Lime Marg", note: "+ mango purée", price: 1600 },
+  { cat: "Drinks", name: "Lime Marg", note: "+ mango purée", price: 1600 },
+  { cat: "Drinks", name: "Lime Marg", note: "+ mango purée", price: 1600 },
+  { cat: "Drinks", name: "Lime Marg", note: "tajín rim", price: 1500 },
+  { cat: "Drinks", name: "Finca Decero (bottle)", price: 5900 },
+  { cat: "Drinks", name: "Finca Decero (bottle)", price: 5900 },
+  { cat: "Drinks", name: "P. Fruit Ranch Water", price: 1500 },
+  { cat: "Drinks", name: "P. Fruit Ranch Water", price: 1500 },
+  { cat: "Food", name: "Brussels Sprouts", price: 1600 },
+  { cat: "Food", name: "Potstickers", price: 1600 },
+  { cat: "Food", name: "Tuna Stack", price: 2100 },
+  { cat: "Food", name: "Smashed Guac", price: 1500 },
+  { cat: "Food", name: "Smashed Guac", price: 1500 },
+  { cat: "Food", name: "Steak Sandwich", price: 2900 },
+  { cat: "Food", name: "1/2 Ribs", note: "sub truffle fries", price: 3450 },
+  { cat: "Food", name: "Crispy Chicken Sandwich", price: 2100 },
+  { cat: "Food", name: "Steak Salad", price: 2900 },
+  { cat: "Food", name: "Steak Frites", price: 3600 },
+  { cat: "Food", name: "Steak Frites", note: "sub truffle fries", price: 3950 },
+  { cat: "Food", name: "Shrimp Tacos", note: "sub sweet potato fries", price: 2550 },
+  { cat: "Food", name: "Pork Ramen Bowl", price: 2800 },
+  { cat: "Food", name: "Madeira Rigatoni", price: 2600 },
+  { cat: "Food", name: "Scottish Salmon", price: 3500 },
+];
+const COLORS = ["#e0523a","#2563eb","#059669","#9333ea","#d97706","#0891b2","#db2777","#65a30d","#7c3aed","#b91c1c","#0d9488"];
+const LS_KEY = "splitty-moxies-v1";
+
+let state = {
+  people: [],          // {id, name, color}
+  claims: {},          // itemIndex -> [personId, ...]
+  activePerson: null,
+  taxPct: 8,
+  tipPct: 20,
+};
+
+function load() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s && Array.isArray(s.people)) state = { ...state, ...s };
+    }
+  } catch (e) { /* corrupted state — start fresh */ }
+}
+function save() {
+  localStorage.setItem(LS_KEY, JSON.stringify(state));
+}
+
+const $ = (id) => document.getElementById(id);
+const fmt = (cents) => "$" + (cents / 100).toFixed(2);
+const initials = (name) => name.trim().split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
+
+function addPerson(name) {
+  name = name.trim();
+  if (!name) return;
+  const person = {
+    id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name,
+    color: COLORS[state.people.length % COLORS.length],
+  };
+  state.people.push(person);
+  state.activePerson = person.id;
+  save(); render();
+}
+function removePerson(id) {
+  state.people = state.people.filter(p => p.id !== id);
+  for (const k of Object.keys(state.claims)) {
+    state.claims[k] = state.claims[k].filter(pid => pid !== id);
+    if (!state.claims[k].length) delete state.claims[k];
+  }
+  if (state.activePerson === id) state.activePerson = state.people[0]?.id ?? null;
+  save(); render();
+}
+function toggleClaim(itemIdx) {
+  const pid = state.activePerson;
+  if (!pid) {
+    $("hint").innerHTML = "⚠️ <b>First add + select a person</b> above, then tap their items.";
+    $("addForm").classList.add("open");
+    $("nameInput").focus();
+    return;
+  }
+  const list = state.claims[itemIdx] || [];
+  state.claims[itemIdx] = list.includes(pid) ? list.filter(x => x !== pid) : [...list, pid];
+  if (!state.claims[itemIdx].length) delete state.claims[itemIdx];
+  save(); render();
+}
+
+function personShares() {
+  // Fractional cents per person, from evenly split items.
+  const shares = Object.fromEntries(state.people.map(p => [p.id, 0]));
+  let claimed = 0;
+  ITEMS.forEach((item, i) => {
+    const owners = (state.claims[i] || []).filter(pid => pid in shares);
+    if (!owners.length) return;
+    claimed += item.price;
+    for (const pid of owners) shares[pid] += item.price / owners.length;
+  });
+  return { shares, claimed };
+}
+
+function render() {
+  const peopleEl = $("people");
+  peopleEl.innerHTML = "";
+  for (const p of state.people) {
+    const chip = document.createElement("button");
+    chip.className = "chip" + (p.id === state.activePerson ? " active" : "");
+    chip.style.setProperty("--pc", p.color);
+    chip.innerHTML = `<span class="dot"></span>${escapeHtml(p.name)}<span class="rm" title="Remove">✕</span>`;
+    chip.onclick = (e) => {
+      if (e.target.classList.contains("rm")) {
+        if (confirm(`Remove ${p.name}?`)) removePerson(p.id);
+        return;
+      }
+      state.activePerson = p.id; save(); render();
+    };
+    peopleEl.appendChild(chip);
+  }
+  const addBtn = document.createElement("button");
+  addBtn.id = "addPersonBtn";
+  addBtn.textContent = "+ add person";
+  addBtn.onclick = () => { $("addForm").classList.toggle("open"); $("nameInput").focus(); };
+  peopleEl.appendChild(addBtn);
+
+  // Items grouped by category
+  const itemsEl = $("items");
+  itemsEl.innerHTML = "";
+  let lastCat = null;
+  const activeId = state.activePerson;
+  ITEMS.forEach((item, i) => {
+    if (item.cat !== lastCat) {
+      lastCat = item.cat;
+      const lab = document.createElement("p");
+      lab.className = "section-label cat";
+      lab.textContent = item.cat;
+      itemsEl.appendChild(lab);
+    }
+    const owners = state.claims[i] || [];
+    const row = document.createElement("button");
+    row.className = "item" + (activeId && owners.includes(activeId) ? " mine" : "");
+    const avatars = owners.map(pid => {
+      const p = state.people.find(x => x.id === pid);
+      return p ? `<span class="avatar" style="background:${p.color}" title="${escapeHtml(p.name)}">${initials(p.name)}</span>` : "";
+    }).join("");
+    const splitTag = owners.length > 1 ? `<span class="split-tag">÷${owners.length}</span>` : "";
+    row.innerHTML =
+      `<span class="name">${escapeHtml(item.name)}${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</span>` +
+      `<span class="who">${avatars}</span>${splitTag}` +
+      `<span class="price">${fmt(item.price)}</span>`;
+    row.onclick = () => toggleClaim(i);
+    itemsEl.appendChild(row);
+  });
+
+  // Bill totals
+  const subtotal = ITEMS.reduce((a, x) => a + x.price, 0);
+  const taxPct = state.taxPct, tipPct = state.tipPct;
+  const tax = subtotal * taxPct / 100;
+  const tip = subtotal * tipPct / 100;
+  $("taxPct").value = taxPct;
+  $("tipPct").value = tipPct;
+  $("billTotals").innerHTML =
+    trow("Sub Total", fmt(subtotal)) +
+    trow(`Tax (${taxPct}%)`, fmt(Math.round(tax))) +
+    trow(`Service / Tip (${tipPct}%)`, fmt(Math.round(tip))) +
+    trow("TOTAL", fmt(Math.round(subtotal + tax + tip)), true);
+
+  // Per-person totals
+  const { shares, claimed } = personShares();
+  const unclaimed = subtotal - claimed;
+  const ptEl = $("personTotals");
+  ptEl.innerHTML = "";
+  if (!state.people.length) {
+    ptEl.innerHTML = `<p class="hint">No one yet — add people above to start splitting.</p>`;
+  }
+  for (const p of state.people) {
+    const share = shares[p.id];
+    const pTax = share * taxPct / 100;
+    const pTip = share * tipPct / 100;
+    const total = share + pTax + pTip;
+    const itemsList = ITEMS.map((item, i) => {
+      const owners = state.claims[i] || [];
+      if (!owners.includes(p.id)) return "";
+      const part = owners.length > 1 ? ` <em>(1/${owners.length})</em>` : "";
+      return `<li><span>${escapeHtml(item.name)}${part}</span><span>${fmt(Math.round(item.price / owners.length))}</span></li>`;
+    }).join("");
+    const card = document.createElement("div");
+    card.className = "person-card";
+    card.style.setProperty("--pc", p.color);
+    card.innerHTML =
+      `<h3><span class="avatar" style="background:${p.color}">${initials(p.name)}</span>` +
+      `${escapeHtml(p.name)}<span class="owes">${fmt(Math.round(total))}</span></h3>` +
+      `<div class="mini"><span>items ${fmt(Math.round(share))}</span>` +
+      `<span>tax ${fmt(Math.round(pTax))}</span><span>tip ${fmt(Math.round(pTip))}</span></div>` +
+      (itemsList ? `<ul>${itemsList}</ul>` : `<ul><li><span>nothing claimed yet…</span></li></ul>`);
+    ptEl.appendChild(card);
+  }
+  if (state.people.length) {
+    const banner = document.createElement("div");
+    const done = unclaimed < 1;
+    banner.className = "unclaimed-banner" + (done ? " allclaimed" : "");
+    banner.innerHTML = done
+      ? `<span>✓ every item is claimed</span><span>${fmt(Math.round(subtotal * (1 + (taxPct + tipPct) / 100)))}</span>`
+      : `<span>unclaimed items</span><span>${fmt(Math.round(unclaimed))} + tax/tip</span>`;
+    ptEl.appendChild(banner);
+  }
+}
+
+function trow(label, val, big) {
+  return `<div class="trow${big ? " big" : ""}"><span class="lab">${label}:</span><span>${val}</span></div>`;
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+$("addForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  addPerson($("nameInput").value);
+  $("nameInput").value = "";
+  $("nameInput").focus();
+});
+$("taxPct").addEventListener("input", e => { state.taxPct = Math.max(0, parseFloat(e.target.value) || 0); save(); render(); });
+$("tipPct").addEventListener("input", e => { state.tipPct = Math.max(0, parseFloat(e.target.value) || 0); save(); render(); });
+$("resetBtn").onclick = () => {
+  if (confirm("Clear all people and selections?")) {
+    localStorage.removeItem(LS_KEY);
+    state = { people: [], claims: {}, activePerson: null, taxPct: 8, tipPct: 20 };
+    render();
+  }
+};
+// Live-sync across open tabs/windows on the same device.
+window.addEventListener("storage", (e) => {
+  if (e.key === LS_KEY) { load(); render(); }
+});
+
+load();
+render();
+</script>
+</body>
+</html>
