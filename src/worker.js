@@ -249,13 +249,18 @@ async function parseReceipt(request, env) {
   const meter = await meterCheck(env, request, "parse");
   if (!meter.ok) return json({ error: meter.message }, 429);
 
-  // effort and server-side fallbacks are Opus-5-tier request features; sending
-  // them to e.g. claude-haiku-4-5 is an upstream 400.
+  // effort is an Opus-5-tier request feature; sending it to e.g.
+  // claude-haiku-4-5 is an upstream 400. (No fallbacks param: a refusal on a
+  // receipt photo is vanishingly rare and manual entry is the real fallback.)
   const model = env.PARSE_MODEL || "claude-opus-5";
   const isOpus5Tier = /^claude-(opus-5|fable-5|mythos-5)/.test(model);
+  // Real keys are printable ASCII; pasted secrets sometimes smuggle in
+  // zero-width/BOM characters that make the header invalid HTTP and get the
+  // request rejected upstream with a bare 400. Strip anything else.
+  const apiKey = env.ANTHROPIC_API_KEY.replace(/[^\x21-\x7e]/g, "");
   const headers = {
     "content-type": "application/json",
-    "x-api-key": env.ANTHROPIC_API_KEY,
+    "x-api-key": apiKey,
     "anthropic-version": "2023-06-01",
   };
   const req = {
@@ -273,8 +278,6 @@ async function parseReceipt(request, env) {
     ],
   };
   if (isOpus5Tier) {
-    headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
-    req.fallbacks = "default";
     req.output_config.effort = "medium";
   }
 
@@ -285,7 +288,12 @@ async function parseReceipt(request, env) {
   });
 
   if (!apiRes.ok) {
-    return json({ error: `Receipt scanning failed (upstream ${apiRes.status}). Try again or enter items manually.` }, 502);
+    let detail = "";
+    try {
+      detail = JSON.parse(await apiRes.text())?.error?.message?.slice(0, 200) || "";
+    } catch {}
+    console.error("anthropic error", apiRes.status, detail);
+    return json({ error: `Receipt scanning failed (upstream ${apiRes.status}${detail ? ": " + detail : ""}). Try again or enter items manually.` }, 502);
   }
   const msg = await apiRes.json();
   if (msg.stop_reason === "refusal") {
