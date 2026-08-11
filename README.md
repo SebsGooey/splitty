@@ -1,27 +1,46 @@
 # Splitty 🧾
 
-Interactive bill splitter for the Moxies Miami receipt (07/31/26, Table 122, Party of 11).
+Snap a receipt, share a link, split the bill — live on every phone at the table.
 
-**Live:** https://sebsgooey.github.io/splitty/
+**Live:** https://splitty.<your-subdomain>.workers.dev *(original Moxies demo: [/moxies.html](public/moxies.html))*
 
 ## How it works
 
-1. Add everyone who was at the table.
-2. Tap a person's name to select them, then tap the items they had.
-3. Tap an item again to un-claim it. If multiple people claim the same item, it splits evenly between them.
-4. Each person's card shows their items subtotal, plus their proportional share of tax (8%) and the 20% service charge — both percentages are editable.
+1. **Create a bill** — snap a photo of the receipt (Claude vision reads the items; you review and fix the draft) or type items in manually.
+2. **Share the link** — the URL is the access: no accounts, no app. Anyone with it can join with their name.
+3. **Claim items** — tap what you had; shared items split evenly. Every phone viewing the bill updates in realtime over WebSockets.
+4. Each person's total includes their proportional share of tax and tip, exact to the cent (largest-remainder allocation — the per-person totals always sum to the bill total).
 
-Everything updates live as items are claimed, and selections persist in the browser via `localStorage` (they also sync in real time across tabs on the same device).
+Bills self-delete after 90 days of inactivity. Receipt images are never stored.
 
-## Receipt details
+## Architecture
 
-Line items were consolidated from the printed receipt (e.g. "Lime Marg $15.00" + "Add Mango Puree $1.00" → one $16.00 item) and verified to sum exactly to the printed totals:
+One Cloudflare Workers project, no build step, no framework:
 
-| | |
-|---|---:|
-| Sub Total | $737.00 |
-| Tax (8%) | $58.96 |
-| Service Charge (20%) | $147.40 |
-| **Total** | **$943.36** |
+- **`public/`** — static vanilla-JS frontend (create page, bill page) served via Workers Static Assets.
+- **`src/worker.js`** — the Worker (routing, bill creation, receipt parsing via the Anthropic API) plus two Durable Objects:
+  - **`BillRoom`** (one per bill) — SQLite-backed DO that is simultaneously the database, the write serializer (single-threaded actor: simultaneous taps can't conflict), and the WebSocket hub (Hibernation API; full-state versioned broadcasts).
+  - **`Meter`** (singleton) — daily per-IP and global rate caps on the endpoints that cost money.
+- **Security model** — capability URLs (128-bit bill IDs); hashed creator + per-person tokens; idempotent `set_claim` intents (replays are no-ops); same-origin enforcement on POSTs; per-connection message throttles; CSP + no-referrer + noindex headers.
 
-No build step — a single static `index.html`, hosted on GitHub Pages.
+## Develop
+
+```bash
+npm install
+npm run dev        # http://localhost:8787
+```
+
+## Deploy
+
+```bash
+npx wrangler login
+npm run deploy
+```
+
+Then enable receipt scanning (optional — manual entry works without it):
+
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY   # paste your key at the prompt
+```
+
+Cost control: parse requests are capped at 10/IP/day and 50/day globally; set a monthly spend limit on the Anthropic workspace as the external hard cap. Model defaults to `claude-opus-5` (~1–3¢/receipt); set `PARSE_MODEL = "claude-haiku-4-5"` in `wrangler.toml` `[vars]` for the cheap toggle. Optionally set `TURNSTILE_SITE_KEY` (vars) + `TURNSTILE_SECRET` (secret) to add a bot check to scanning.

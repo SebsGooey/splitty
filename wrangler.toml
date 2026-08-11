@@ -1,0 +1,24 @@
+name = "splitty"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+
+# Optional plain-text config (secrets are set with `wrangler secret put`, never here):
+# [vars]
+# PARSE_MODEL = "claude-opus-5"        # or "claude-haiku-4-5" for the cheap toggle
+# TURNSTILE_SITE_KEY = "..."           # enables the Turnstile widget when set
+
+[[durable_objects.bindings]]
+name = "BILL_ROOM"
+class_name = "BillRoom"
+
+[[durable_objects.bindings]]
+name = "METER"
+class_name = "Meter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BillRoom", "Meter"]

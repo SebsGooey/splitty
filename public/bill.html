@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Splitty · bill</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="conn" id="conn">reconnecting…</div>
+<main class="receipt">
+  <header>
+    <h1><a href="/">SPLITTY</a></h1>
+    <div class="sub" id="billTitle">loading…</div>
+  </header>
+  <hr class="rule">
+
+  <div class="error-box" id="errorBox"></div>
+
+  <!-- join screen -->
+  <div id="joinView" class="hidden">
+    <p class="section-label">Who are you?</p>
+    <div id="joinPeople" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+    <form id="joinForm" autocomplete="off" style="display:flex;gap:6px">
+      <input type="text" id="joinName" placeholder="Your name" maxlength="40">
+      <button class="btn small" type="submit" style="border-radius:8px">Join</button>
+    </form>
+    <p class="hint">Everyone already on the bill is shown above — if that's not you, join with your name. Then tap the items you had.</p>
+    <button class="linklike" id="watchBtn">just watching — skip</button>
+  </div>
+
+  <!-- main bill view -->
+  <div id="billView" class="hidden">
+    <div id="shareBar" class="banner info hidden" style="align-items:center">
+      <span style="flex:1">Send this link to everyone at the table</span>
+      <button class="btn small accent" id="shareBtn" type="button">Share link</button>
+    </div>
+
+    <p class="section-label">Who's splitting</p>
+    <div id="people"></div>
+    <p class="hint" id="claimHint"></p>
+
+    <hr class="rule">
+    <div id="items"></div>
+
+    <hr class="rule">
+    <div id="billTotals"></div>
+
+    <hr class="rule">
+    <p class="section-label">Each person owes</p>
+    <div id="personTotals"></div>
+
+    <div id="creatorTools" class="hidden">
+      <hr class="rule">
+      <p class="section-label">Creator tools</p>
+      <button class="btn ghost" id="editBtn" type="button">✏️ edit items / tax / tip</button>
+      <div style="height:8px"></div>
+      <button class="btn ghost" id="lockBtn" type="button">🔒 lock bill</button>
+      <p class="hint">Backup edit link (save it somewhere in case this browser forgets you):</p>
+      <input type="text" id="editLink" readonly onclick="this.select()" style="font-size:.7rem">
+    </div>
+  </div>
+
+  <!-- creator edit view -->
+  <div id="editView" class="hidden">
+    <p class="section-label">Edit bill</p>
+    <div style="margin-bottom:10px"><input type="text" id="editRestaurant" maxlength="80" placeholder="Bill name"></div>
+    <div id="editRows"></div>
+    <button class="btn ghost" id="editAddItem" type="button">+ add item</button>
+    <hr class="rule">
+    <div class="money-row"><label>Tax ($)</label><input type="number" id="editTax" min="0" step="0.01"></div>
+    <div class="money-row"><label>Tip / service</label>
+      <select id="editTipMode" style="width:70px"><option value="percent">%</option><option value="amount">$</option></select>
+      <input type="number" id="editTipValue" min="0" step="0.01" style="width:100px">
+    </div>
+    <hr class="rule">
+    <button class="btn" id="editSave" type="button">Save changes</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="editCancel" type="button">Cancel</button>
+    <p class="hint">Claims on deleted items are removed; everything else is kept.</p>
+  </div>
+
+  <div class="barcode"></div>
+  <p class="footer-note" id="footNote">totals update live on every phone with this link</p>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = (c) => "$" + (c / 100).toFixed(2);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const initials = (name) => name.trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+const toCents = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : 0; };
+
+const billId = location.pathname.split("/").pop();
+if (!/^[A-Za-z0-9_-]{16,64}$/.test(billId)) location.href = "/";
+
+// Creator token can arrive via #edit= backup link. Only accept well-formed
+// tokens so a garbled link can't clobber a valid stored token.
+if (location.hash.startsWith("#edit=")) {
+  const t = location.hash.slice(6);
+  if (/^[A-Za-z0-9_-]{16,64}$/.test(t)) {
+    try { localStorage.setItem("splitty-creator-" + billId, t); } catch {}
+  }
+  history.replaceState(null, "", location.pathname);
+}
+const creatorToken = localStorage.getItem("splitty-creator-" + billId);
+let me = null; // {personId, token}
+try { me = JSON.parse(localStorage.getItem("splitty-me-" + billId)); } catch {}
+
+let bill = null;
+let activePersonId = null; // whose claims a tap toggles (creator can switch)
+let watching = false;
+let joined = false;
+
+function showError(msg) {
+  const box = $("errorBox");
+  box.textContent = msg;
+  box.classList.add("show");
+  setTimeout(() => box.classList.remove("show"), 6000);
+}
+
+// ---------- websocket with reconnect ----------
+// One socket lineage at a time: a generation counter makes orphaned sockets
+// inert (they can't touch the active socket, its ping timer, or the backoff),
+// and every handler is bound to its own socket instance, never the global.
+let ws = null, gen = 0, backoff = 500, reconnectTimer = null, billGone = false;
+
+function connect() {
+  if (billGone) return;
+  if (ws && ws.readyState <= 1) return; // already open or connecting
+  clearTimeout(reconnectTimer);
+  const myGen = ++gen;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const sock = new WebSocket(`${proto}://${location.host}/api/bills/${billId}/ws`);
+  ws = sock;
+  let ping = null;
+
+  sock.onopen = () => {
+    if (myGen !== gen) { try { sock.close(); } catch {} return; }
+    backoff = 500;
+    $("conn").classList.remove("off");
+    ping = setInterval(() => { if (sock.readyState === 1) sock.send("ping"); }, 25000);
+  };
+  sock.onmessage = (e) => {
+    if (myGen !== gen || e.data === "pong") return;
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === "state") {
+      const first = bill === null;
+      if (bill && msg.bill.version < bill.version) return; // stale
+      bill = msg.bill;
+      if (first) firstRender();
+      render();
+    } else if (msg.type === "joined") {
+      me = { personId: msg.personId, token: msg.token };
+      try { localStorage.setItem("splitty-me-" + billId, JSON.stringify(me)); } catch {}
+      activePersonId = me.personId;
+      joined = true;
+      showView("bill");
+    } else if (msg.type === "error") {
+      showError(msg.message);
+    }
+  };
+  sock.onclose = (e) => {
+    clearInterval(ping);
+    if (myGen !== gen) return; // orphaned socket — the active lineage owns reconnects
+    if (e.code === 1000 && (e.reason === "expired" || e.reason === "gone")) {
+      billGone = true;
+      showGone();
+      return;
+    }
+    $("conn").classList.add("off");
+    reconnectTimer = setTimeout(connect, backoff + Math.random() * 300);
+    backoff = Math.min(backoff * 2, 15000);
+  };
+  sock.onerror = () => { try { sock.close(); } catch {} };
+}
+
+function sendMsg(o) {
+  if (ws?.readyState === 1) {
+    ws.send(JSON.stringify(o));
+    return true;
+  }
+  showError("Reconnecting — try again in a second.");
+  connect();
+  return false;
+}
+
+function showGone() {
+  document.querySelector("main").innerHTML =
+    '<header><h1>SPLITTY</h1></header><hr class="rule">' +
+    '<p class="hint">This bill doesn\'t exist (or expired after 90 days of inactivity).</p>' +
+    '<hr class="rule"><a class="btn" style="text-decoration:none;text-align:center" href="/">Start a new bill</a>';
+}
+
+// Sleeping phones: when we come back, make sure the socket is alive.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") connect();
+});
+window.addEventListener("online", () => connect());
+
+// ---------- money math: exact allocation with largest remainder ----------
+function allocate(totalCents, weights) {
+  const sumW = weights.reduce((a, b) => a + b, 0);
+  if (sumW <= 0 || totalCents <= 0) return weights.map(() => 0);
+  const exact = weights.map((w) => (totalCents * w) / sumW);
+  const base = exact.map(Math.floor);
+  let leftover = totalCents - base.reduce((a, b) => a + b, 0);
+  const order = exact
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  for (let k = 0; k < leftover; k++) base[order[k % order.length].i]++;
+  return base;
+}
+
+function computeTotals(b) {
+  const subtotal = b.items.reduce((a, i) => a + i.priceCents, 0);
+  const shares = Object.fromEntries(b.people.map((p) => [p.id, 0]));
+  const perPersonItems = Object.fromEntries(b.people.map((p) => [p.id, []]));
+  let claimed = 0;
+  for (const item of b.items) {
+    const owners = (b.claims[item.id] || []).filter((pid) => pid in shares);
+    if (!owners.length) continue;
+    claimed += item.priceCents;
+    const parts = allocate(item.priceCents, owners.map(() => 1));
+    owners.forEach((pid, idx) => {
+      shares[pid] += parts[idx];
+      perPersonItems[pid].push({ item, part: parts[idx], of: owners.length });
+    });
+  }
+  const unclaimed = subtotal - claimed;
+  const tipTotal = b.tip.mode === "percent" ? Math.round((subtotal * b.tip.value) / 100) : b.tip.value;
+  // Weights drive tax/tip allocation. If every item is $0 (all-zero-price bill)
+  // the proportional weights vanish — fall back to an equal split so tax/tip
+  // still land on people instead of nobody.
+  const weights = subtotal === 0 && b.people.length
+    ? [...b.people.map(() => 1), 0]
+    : [...b.people.map((p) => shares[p.id]), unclaimed];
+  const taxAlloc = allocate(b.taxCents, weights);
+  const tipAlloc = allocate(tipTotal, weights);
+  const perPerson = b.people.map((p, idx) => ({
+    person: p,
+    items: perPersonItems[p.id],
+    shareCents: shares[p.id],
+    taxCents: taxAlloc[idx],
+    tipCents: tipAlloc[idx],
+    totalCents: shares[p.id] + taxAlloc[idx] + tipAlloc[idx],
+  }));
+  return { subtotal, tipTotal, unclaimed, perPerson,
+    unclaimedTax: taxAlloc[b.people.length] || 0, unclaimedTip: tipAlloc[b.people.length] || 0 };
+}
+
+// ---------- views ----------
+function showView(name) {
+  $("joinView").classList.toggle("hidden", name !== "join");
+  $("billView").classList.toggle("hidden", name !== "bill");
+  $("editView").classList.toggle("hidden", name !== "edit");
+}
+
+function firstRender() {
+  const iAmListed = me && bill.people.some((p) => p.id === me.personId);
+  joined = Boolean(iAmListed);
+  if (joined) activePersonId = me.personId;
+  if (joined || watching || (creatorToken && bill.people.length === 0)) {
+    // creator on a fresh bill: skip join, show share bar; they can join from the chips
+    showView("bill");
+  } else {
+    showView("join");
+  }
+  if (creatorToken) {
+    $("creatorTools").classList.remove("hidden");
+    $("editLink").value = location.origin + "/b/" + billId + "#edit=" + creatorToken;
+    $("shareBar").classList.remove("hidden");
+  }
+}
+
+function render() {
+  if (!bill) return;
+  document.title = "Splitty · " + bill.restaurant;
+  $("billTitle").innerHTML = esc(bill.restaurant) + (bill.locked ? " · 🔒 locked" : "");
+
+  // If we were removed from the bill (or picked someone who was), reset identity.
+  if (me && !bill.people.some((p) => p.id === me.personId)) {
+    me = null;
+    joined = false;
+    try { localStorage.removeItem("splitty-me-" + billId); } catch {}
+  }
+  if (activePersonId && !bill.people.some((p) => p.id === activePersonId)) {
+    activePersonId = me?.personId || null;
+  }
+
+  // Locked bills can't be joined — hide the join form if it's showing.
+  if (bill.locked && !$("joinView").classList.contains("hidden") && !joined) {
+    showView("bill");
+    watching = true;
+  }
+
+  // join screen people list
+  $("joinPeople").innerHTML = bill.people.map((p) =>
+    `<span class="chip" style="--pc:${p.color}"><span class="dot"></span>${esc(p.name)}</span>`).join("") ||
+    '<span class="hint">No one yet — you\'re first!</span>';
+
+  // chips
+  const isCreator = Boolean(creatorToken);
+  $("people").innerHTML = "";
+  for (const p of bill.people) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip" + (p.id === activePersonId ? " active" : "");
+    chip.style.setProperty("--pc", p.color);
+    const isMe = me && p.id === me.personId;
+    chip.innerHTML = `<span class="dot"></span>${esc(p.name)}${isMe ? ' <span class="you">(you)</span>' : ""}`;
+    chip.onclick = () => {
+      if (isMe || isCreator) {
+        activePersonId = p.id;
+        render();
+      } else {
+        showError(`Only ${p.name} (or the creator) can change their claims.`);
+      }
+    };
+    $("people").appendChild(chip);
+  }
+  if (!joined && !bill.locked) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.style.setProperty("--pc", "#888");
+    btn.innerHTML = "+ join";
+    btn.onclick = () => showView("join");
+    $("people").appendChild(btn);
+  }
+
+  $("claimHint").innerHTML = activePersonId
+    ? `Tap the items <b>${esc(bill.people.find((p) => p.id === activePersonId)?.name || "")}</b> had. Tap again to remove. Shared items split evenly.`
+    : (bill.people.length ? "Join (or pick yourself) to claim items." : "Add everyone as they open the link — or join yourself first.");
+
+  // items
+  const el = $("items");
+  el.innerHTML = "";
+  for (const item of bill.items) {
+    const owners = bill.claims[item.id] || [];
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "item" + (activePersonId && owners.includes(activePersonId) ? " mine" : "");
+    const avatars = owners.map((pid) => {
+      const p = bill.people.find((x) => x.id === pid);
+      return p ? `<span class="avatar" style="background:${p.color}" title="${esc(p.name)}">${esc(initials(p.name))}</span>` : "";
+    }).join("");
+    row.innerHTML =
+      `<span class="name">${esc(item.name)}${item.qty > 1 ? `<small>qty ${item.qty}</small>` : ""}</span>` +
+      `<span class="who">${avatars}</span>` +
+      (owners.length > 1 ? `<span class="split-tag">÷${owners.length}</span>` : "") +
+      `<span class="price">${fmt(item.priceCents)}</span>`;
+    row.onclick = () => {
+      if (bill.locked && !isCreator) return showError("This bill is locked.");
+      if (!activePersonId) return showView("join");
+      const claimed = !(bill.claims[item.id] || []).includes(activePersonId);
+      sendMsg({ type: "set_claim", itemId: item.id, personId: activePersonId, claimed,
+        token: activePersonId === me?.personId ? me.token : creatorToken });
+    };
+    el.appendChild(row);
+  }
+
+  // bill totals
+  const t = computeTotals(bill);
+  const tipLabel = bill.tip.mode === "percent" ? `Tip / service (${bill.tip.value}%)` : "Tip / service";
+  $("billTotals").innerHTML =
+    trow("Sub Total", fmt(t.subtotal)) +
+    trow("Tax", fmt(bill.taxCents)) +
+    trow(tipLabel, fmt(t.tipTotal)) +
+    trow("TOTAL", fmt(t.subtotal + bill.taxCents + t.tipTotal), true);
+
+  // per-person cards
+  const pt = $("personTotals");
+  pt.innerHTML = "";
+  if (!bill.people.length) pt.innerHTML = '<p class="hint">No one has joined yet.</p>';
+  for (const row of t.perPerson) {
+    const card = document.createElement("div");
+    card.className = "person-card";
+    card.style.setProperty("--pc", row.person.color);
+    const list = row.items.map(({ item, part, of }) =>
+      `<li><span>${esc(item.name)}${of > 1 ? ` <em>(1/${of})</em>` : ""}</span><span>${fmt(part)}</span></li>`).join("");
+    card.innerHTML =
+      `<h3><span class="avatar" style="background:${row.person.color}">${esc(initials(row.person.name))}</span>` +
+      `${esc(row.person.name)}<span class="owes">${fmt(row.totalCents)}</span></h3>` +
+      `<div class="mini"><span>items ${fmt(row.shareCents)}</span><span>tax ${fmt(row.taxCents)}</span><span>tip ${fmt(row.tipCents)}</span></div>` +
+      (list ? `<ul>${list}</ul>` : '<ul><li><span>nothing claimed yet…</span></li></ul>');
+    pt.appendChild(card);
+  }
+  if (bill.people.length) {
+    const done = t.unclaimed === 0;
+    const banner = document.createElement("div");
+    banner.className = "banner" + (done ? " ok" : "");
+    banner.innerHTML = done
+      ? "<span>✓ every item is claimed</span>"
+      : `<span>unclaimed items</span><span>${fmt(t.unclaimed + t.unclaimedTax + t.unclaimedTip)} incl. tax/tip</span>`;
+    pt.appendChild(banner);
+  }
+
+  if (isCreator) $("lockBtn").textContent = bill.locked ? "🔓 unlock bill" : "🔒 lock bill";
+}
+
+function trow(label, val, big) {
+  return `<div class="trow${big ? " big" : ""}"><span class="lab">${label}:</span><span>${val}</span></div>`;
+}
+
+// ---------- join ----------
+$("joinForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("joinName").value.trim();
+  if (!name) return;
+  sendMsg({ type: "join", name });
+});
+$("watchBtn").onclick = () => { watching = true; showView("bill"); };
+
+// ---------- share ----------
+$("shareBtn").onclick = async () => {
+  const url = location.origin + "/b/" + billId;
+  const title = "Splitty — " + (bill?.restaurant || "our bill");
+  if (navigator.share) {
+    try { await navigator.share({ title, text: "Claim what you had:", url }); return; } catch {}
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    $("shareBtn").textContent = "Copied!";
+    setTimeout(() => ($("shareBtn").textContent = "Share link"), 1500);
+  } catch { prompt("Copy this link:", url); }
+};
+
+// ---------- creator tools ----------
+$("lockBtn").onclick = () => sendMsg({ type: "lock", locked: !bill.locked, token: creatorToken });
+$("editBtn").onclick = () => {
+  $("editRestaurant").value = bill.restaurant;
+  $("editRows").innerHTML = "";
+  for (const it of bill.items) addEditRow(it);
+  $("editTax").value = (bill.taxCents / 100).toFixed(2);
+  $("editTipMode").value = bill.tip.mode;
+  $("editTipValue").value = bill.tip.mode === "percent" ? bill.tip.value : (bill.tip.value / 100).toFixed(2);
+  showView("edit");
+};
+function addEditRow(item) {
+  const row = document.createElement("div");
+  row.className = "item-row";
+  if (item?.id) row.dataset.itemId = item.id;
+  if (item?.qty > 1) row.dataset.qty = item.qty;
+  row.innerHTML =
+    '<input type="text" class="name" placeholder="Item" maxlength="80">' +
+    '<input type="number" class="price" min="0" step="0.01" placeholder="0.00">' +
+    '<button class="rm" type="button" title="Remove">✕</button>';
+  if (item) {
+    row.querySelector(".name").value = item.name;
+    row.querySelector(".price").value = (item.priceCents / 100).toFixed(2);
+  }
+  row.querySelector(".rm").onclick = () => row.remove();
+  $("editRows").appendChild(row);
+}
+$("editAddItem").onclick = () => addEditRow();
+$("editCancel").onclick = () => showView("bill");
+$("editSave").onclick = () => {
+  const items = [...$("editRows").querySelectorAll(".item-row")]
+    .map((row) => ({
+      id: row.dataset.itemId,
+      name: row.querySelector(".name").value.trim(),
+      qty: Number(row.dataset.qty) || 1,
+      priceCents: toCents(row.querySelector(".price").value),
+    }))
+    .filter((i) => i.name);
+  if (!items.length) return showError("A bill needs at least one item.");
+  const mode = $("editTipMode").value;
+  // Mirror the server's clamping so the preview never disagrees with storage.
+  const tipRaw = parseFloat($("editTipValue").value) || 0;
+  const tip = mode === "percent"
+    ? { mode, value: Math.round(Math.min(Math.max(tipRaw, 0), 100) * 10) / 10 }
+    : { mode, value: toCents($("editTipValue").value) };
+  const sent = sendMsg({
+    type: "edit_bill",
+    token: creatorToken,
+    bill: {
+      restaurant: $("editRestaurant").value.trim(),
+      items,
+      taxCents: toCents($("editTax").value),
+      tip,
+    },
+  });
+  if (sent) showView("bill"); // if not sent, stay here so the edits aren't lost
+};
+
+// ---------- boot ----------
+fetch("/api/bills/" + billId)
+  .then((r) => (r.ok ? r.json() : Promise.reject()))
+  .then(() => connect())
+  .catch(() => {
+    billGone = true;
+    showGone();
+  });
+</script>
+</body>
+</html>

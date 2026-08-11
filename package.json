@@ -1,0 +1,13 @@
+{
+  "name": "splitty",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Splitty — snap a receipt, share a link, split the bill in realtime",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}
