@@ -17,6 +17,17 @@
 
   <div class="error-box" id="errorBox"></div>
 
+  <div id="authCard" class="hidden">
+    <p class="section-label">Sign in to create bills</p>
+    <div id="gsiBtn" style="display:flex;justify-content:center;margin:10px 0"></div>
+    <p class="hint">One-time sign-in keeps the AI scanner spam-free.<br><b>Friends with a bill link never need an account.</b></p>
+    <hr class="rule">
+  </div>
+  <div id="whoBar" class="hidden" style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:10px">
+    <span class="hint" style="margin:0" id="whoText"></span>
+    <button class="btn small ghost" id="signOutBtn" type="button" style="font-size:.7rem;padding:4px 10px">sign out</button>
+  </div>
+
   <p class="section-label">Scan a receipt</p>
   <input type="file" id="photoInput" accept="image/*" capture="environment" class="hidden">
   <button class="btn accent" id="scanBtn">📷 &nbsp;Snap / upload receipt photo</button>
@@ -68,13 +79,89 @@ const toCents = (v) => {
 const tipPct = (v) => Math.round(Math.min(Math.max(parseFloat(v) || 0, 0), 100) * 10) / 10;
 
 let parseEnabled = true;
-fetch("/api/config").then((r) => r.json()).then((c) => {
-  parseEnabled = c.parseEnabled;
+let needAuth = false;
+let user = null;
+
+function refreshGates() {
+  const locked = needAuth && !user;
+  $("authCard").classList.toggle("hidden", !locked);
+  $("whoBar").classList.toggle("hidden", !(needAuth && user));
+  if (needAuth && user) $("whoText").textContent = "signed in as " + (user.email || user.name || "you");
+  $("createBtn").disabled = locked;
+  $("scanBtn").disabled = locked || !parseEnabled;
   if (!parseEnabled) {
-    $("scanBtn").disabled = true;
     $("scanHint").textContent = "Receipt scanning isn't switched on yet — enter items below.";
+  } else if (locked) {
+    $("scanHint").textContent = "Sign in above to scan receipts and create bills.";
+  } else {
+    $("scanHint").textContent = "AI reads the items — you review and fix before anything is created.";
   }
-}).catch(() => {});
+}
+
+// Called on any 401 from the money endpoints: the session expired (or was
+// signed out elsewhere) — reopen the sign-in gate instead of dead-ending.
+function sessionLost() {
+  if (!needAuth) return;
+  user = null;
+  refreshGates();
+}
+
+let gisReady = false;
+function initGoogleButton(clientId) {
+  if (gisReady) return;
+  gisReady = true;
+  const s = document.createElement("script");
+  s.src = "https://accounts.google.com/gsi/client";
+  s.async = true;
+  s.defer = true;
+  s.onerror = () => {
+    gisReady = false;
+    showError("Couldn't load Google sign-in (blocked by an extension or network?) — allow accounts.google.com and reload.");
+  };
+  s.onload = () => {
+    google.accounts.id.initialize({
+      client_id: clientId,
+      callback: async (resp) => {
+        try {
+          const r = await fetch("/api/auth/google", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ credential: resp.credential }),
+          });
+          const out = await r.json();
+          if (!r.ok) throw new Error(out.error || "Sign-in failed");
+          user = out.user;
+          refreshGates();
+        } catch (e) {
+          showError(e.message || "Sign-in failed — try again.");
+        }
+      },
+    });
+    google.accounts.id.renderButton($("gsiBtn"), { theme: "outline", size: "large", shape: "pill", text: "signin_with" });
+  };
+  document.head.appendChild(s);
+}
+
+$("signOutBtn").onclick = async () => {
+  try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
+  sessionLost();
+};
+
+Promise.all([
+  fetch("/api/config").then((r) => r.json()),
+  fetch("/api/me").then((r) => r.json()).catch(() => ({ user: null })),
+]).then(([c, meRes]) => {
+  parseEnabled = c.parseEnabled;
+  needAuth = Boolean(c.authRequired);
+  user = meRes.user;
+  if (c.authMisconfigured) showError("Server sign-in config is incomplete — bill creation is paused until it's fixed.");
+  // Init the button whenever auth is on, even while signed in, so signing out
+  // (or an expired session) immediately has a working sign-in button.
+  if (needAuth && c.googleClientId) initGoogleButton(c.googleClientId);
+  refreshGates();
+}).catch(() => {
+  showError("Couldn't reach the server — reload to try again.");
+});
 
 function showError(msg) {
   const box = $("errorBox");
@@ -138,13 +225,14 @@ $("photoInput").addEventListener("change", async (e) => {
       body: JSON.stringify({ media_type: mediaType, data }),
     });
     const out = await res.json();
+    if (res.status === 401) sessionLost();
     if (!res.ok) throw new Error(out.error || "Scan failed");
     applyDraft(out.draft);
   } catch (err) {
     showError(err.message || "Scan failed — enter items manually.");
   } finally {
-    $("scanBtn").disabled = !parseEnabled;
     $("scanBtn").innerHTML = "📷 &nbsp;Snap / upload receipt photo";
+    refreshGates();
     e.target.value = "";
   }
 });
@@ -214,6 +302,7 @@ $("createBtn").onclick = async () => {
       body: JSON.stringify(body),
     });
     const out = await res.json();
+    if (res.status === 401) sessionLost();
     if (!res.ok) throw new Error(out.error || "Could not create the bill.");
     // Private-mode browsers can throw on setItem — the bill exists either way,
     // so always navigate; the #edit= fragment re-delivers the creator token.

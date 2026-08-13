@@ -69,11 +69,179 @@ function publicBill(bill) {
   };
 }
 
+// ---------- Google sign-in + sessions ----------
+// Gate is dormant until GOOGLE_CLIENT_ID (var) + SESSION_SECRET (secret) exist,
+// same activation pattern as receipt scanning. It protects the money side
+// (create/scan); joining a bill via share link never requires an account.
+
+const SESSION_COOKIE = "splitty_session";
+const SESSION_TTL_MS = 30 * DAY_MS;
+
+// "on" needs both halves; exactly one configured is an operator mistake and
+// must fail CLOSED on the money endpoints, not silently run ungated.
+function authState(env) {
+  const hasId = Boolean(env.GOOGLE_CLIENT_ID);
+  const hasSecret = Boolean(env.SESSION_SECRET);
+  if (hasId && hasSecret) return "on";
+  if (hasId || hasSecret) return "misconfigured";
+  return "off";
+}
+const authRequired = (env) => authState(env) === "on";
+
+const b64urlEncode = (bytes) =>
+  btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+
+function b64urlDecode(s) {
+  s = s.replaceAll("-", "+").replaceAll("_", "/");
+  while (s.length % 4) s += "=";
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function hmacKey(secret, usages) {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, usages);
+}
+
+async function signSession(payload, secret) {
+  const body = b64urlEncode(new TextEncoder().encode(JSON.stringify(payload)));
+  const key = await hmacKey(secret, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return body + "." + b64urlEncode(sig);
+}
+
+async function verifySessionToken(token, secret) {
+  const dot = token.indexOf(".");
+  if (dot < 1) return null;
+  const body = token.slice(0, dot);
+  try {
+    const key = await hmacKey(secret, ["verify"]);
+    const ok = await crypto.subtle.verify("HMAC", key, b64urlDecode(token.slice(dot + 1)), new TextEncoder().encode(body));
+    if (!ok) return null;
+    const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(body)));
+    if (!payload || typeof payload.sub !== "string" || typeof payload.exp !== "number" || payload.exp < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function getSession(request, env) {
+  if (!env.SESSION_SECRET) return null;
+  const cookie = request.headers.get("Cookie") || "";
+  const m = cookie.match(/(?:^|;\s*)splitty_session=([A-Za-z0-9_.-]+)/);
+  if (!m) return null;
+  return verifySessionToken(m[1], env.SESSION_SECRET);
+}
+
+// Google's JWKS, cached per isolate. Keys rotate on the order of days; a short
+// TTL keeps rotation safe without a fetch per sign-in. Forced refetches (on an
+// unknown kid) are rate-limited so bogus tokens can't turn us into a JWKS
+// fetch loop.
+let jwksCache = { keys: null, fetchedAt: 0 };
+let jwksLastForced = 0;
+
+async function getGoogleJwks() {
+  if (jwksCache.keys && Date.now() - jwksCache.fetchedAt < 3 * 60 * 60 * 1000) return jwksCache.keys;
+  const res = await fetch("https://www.googleapis.com/oauth2/v3/certs");
+  if (!res.ok) throw new Error("jwks fetch failed");
+  const { keys } = await res.json();
+  jwksCache = { keys, fetchedAt: Date.now() };
+  return keys;
+}
+
+async function verifyGoogleIdToken(idToken, clientId) {
+  if (typeof idToken !== "string" || idToken.length > 4096) return null;
+  const parts = idToken.split(".");
+  if (parts.length !== 3) return null;
+  let header, payload;
+  try {
+    header = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0])));
+    payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1])));
+  } catch {
+    return null;
+  }
+  if (header.alg !== "RS256" || !header.kid) return null;
+
+  let jwk = (await getGoogleJwks()).find((k) => k.kid === header.kid);
+  if (!jwk) {
+    // Key rotation between cache refreshes — refetch, at most once a minute.
+    if (Date.now() - jwksLastForced < 60_000) return null;
+    jwksLastForced = Date.now();
+    jwksCache = { keys: null, fetchedAt: 0 };
+    jwk = (await getGoogleJwks()).find((k) => k.kid === header.kid);
+    if (!jwk) return null;
+  }
+  let ok = false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    ok = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      b64urlDecode(parts[2]),
+      new TextEncoder().encode(parts[0] + "." + parts[1]),
+    );
+  } catch {
+    return null; // malformed signature/key material is a bad token, not a server error
+  }
+  if (!ok) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.iss !== "https://accounts.google.com" && payload.iss !== "accounts.google.com") return null;
+  if (payload.aud !== clientId) return null;
+  if (typeof payload.exp !== "number" || payload.exp < now - 60) return null;
+  if (typeof payload.sub !== "string" || !payload.sub) return null;
+  return payload;
+}
+
+function sessionCookie(token, maxAgeSeconds) {
+  return `${SESSION_COOKIE}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
+}
+
+async function handleGoogleAuth(request, env) {
+  if (!authRequired(env)) return json({ error: "Sign-in isn't configured." }, 501);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Bad request" }, 400);
+  }
+  let payload;
+  try {
+    payload = await verifyGoogleIdToken(body.credential, env.GOOGLE_CLIENT_ID);
+  } catch {
+    // JWKS unreachable — a server-side hiccup, not a bad credential.
+    return json({ error: "Sign-in is temporarily unavailable — try again in a minute." }, 503);
+  }
+  if (!payload) return json({ error: "Sign-in failed — try again." }, 401);
+  const session = {
+    sub: payload.sub,
+    // Only trust the email claim when Google says it's verified.
+    email: payload.email_verified === true && typeof payload.email === "string" ? payload.email.slice(0, 120) : "",
+    name: typeof payload.name === "string" ? payload.name.slice(0, 80) : "",
+    exp: Date.now() + SESSION_TTL_MS,
+  };
+  const token = await signSession(session, env.SESSION_SECRET);
+  return json(
+    { user: { email: session.email, name: session.name } },
+    200,
+    { "set-cookie": sessionCookie(token, SESSION_TTL_MS / 1000) },
+  );
+}
+
 // ---------- Worker (router) ----------
 
 // Browsers always send Origin on cross-site POSTs; a mismatched Origin means a
 // drive-by page is spending our Anthropic budget or creating bills via a
 // visitor's browser. Non-browser clients (no Origin header) are not CSRF.
+// (The session cookie is additionally SameSite=Lax.)
 function crossOrigin(request, url) {
   const origin = request.headers.get("Origin");
   return Boolean(origin && origin !== url.origin);
@@ -91,7 +259,19 @@ export default {
         return json({
           parseEnabled: Boolean(env.ANTHROPIC_API_KEY),
           turnstileSiteKey: env.TURNSTILE_SITE_KEY || null,
+          authRequired: authRequired(env),
+          authMisconfigured: authState(env) === "misconfigured",
+          googleClientId: env.GOOGLE_CLIENT_ID || null,
         });
+      }
+
+      if (path === "/api/auth/google" && request.method === "POST") return handleGoogleAuth(request, env);
+      if (path === "/api/auth/logout" && request.method === "POST") {
+        return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
+      }
+      if (path === "/api/me" && request.method === "GET") {
+        const s = await getSession(request, env);
+        return json({ user: s ? { email: s.email, name: s.name } : null, authRequired: authRequired(env) });
       }
 
       if (path === "/api/bills" && request.method === "POST") return createBill(request, env);
@@ -121,13 +301,16 @@ export default {
   },
 };
 
-async function meterCheck(env, request, kind) {
+async function meterCheck(env, request, kind, session) {
   try {
-    const ip = request.headers.get("CF-Connecting-IP") || "local";
+    // Meter BOTH the IP and (when signed in) the Google account: an abuser
+    // then needs to rotate IPs *and* verified Google accounts to scale.
+    const keys = [(await sha256("ip:" + (request.headers.get("CF-Connecting-IP") || "local"))).slice(0, 16)];
+    if (session?.sub) keys.push((await sha256("u:" + session.sub)).slice(0, 16));
     const stub = env.METER.get(env.METER.idFromName("global"));
     const res = await stub.fetch("https://do/check", {
       method: "POST",
-      body: JSON.stringify({ kind, ipHash: (await sha256(ip)).slice(0, 16) }),
+      body: JSON.stringify({ kind, keys }),
     });
     return await res.json();
   } catch {
@@ -137,6 +320,14 @@ async function meterCheck(env, request, kind) {
 }
 
 async function createBill(request, env) {
+  if (authState(env) === "misconfigured") {
+    return json({ error: "Sign-in is half-configured on the server — set both GOOGLE_CLIENT_ID and SESSION_SECRET." }, 503);
+  }
+  const session = await getSession(request, env);
+  if (authRequired(env) && !session) {
+    return json({ error: "Sign in with Google to create bills." }, 401);
+  }
+
   // Validate before metering so malformed requests can't burn the daily budget.
   let body;
   try {
@@ -147,7 +338,7 @@ async function createBill(request, env) {
   const fields = cleanBillFields(body);
   if (fields.error) return json({ error: fields.error }, 400);
 
-  const meter = await meterCheck(env, request, "create");
+  const meter = await meterCheck(env, request, "create", session);
   if (!meter.ok) return json({ error: meter.message }, 429);
 
   const billId = randomToken();
@@ -217,6 +408,13 @@ async function parseReceipt(request, env) {
   if (!env.ANTHROPIC_API_KEY) {
     return json({ error: "Receipt scanning isn't set up yet — enter the items manually." }, 501);
   }
+  if (authState(env) === "misconfigured") {
+    return json({ error: "Sign-in is half-configured on the server — set both GOOGLE_CLIENT_ID and SESSION_SECRET." }, 503);
+  }
+  const session = await getSession(request, env);
+  if (authRequired(env) && !session) {
+    return json({ error: "Sign in with Google to scan receipts." }, 401);
+  }
   // Require a sane, explicit Content-Length: absent (chunked) or non-numeric
   // values must not slip past the size guard as 0/NaN.
   const contentLength = Number(request.headers.get("content-length"));
@@ -246,7 +444,7 @@ async function parseReceipt(request, env) {
 
   // Meter AFTER validation + bot check (junk must not drain the daily budget),
   // but BEFORE the actual spend below.
-  const meter = await meterCheck(env, request, "parse");
+  const meter = await meterCheck(env, request, "parse", session);
   if (!meter.ok) return json({ error: meter.message }, 429);
 
   // effort is an Opus-5-tier request feature; sending it to e.g.
@@ -356,27 +554,32 @@ export class Meter {
     } catch {
       return json({ ok: false, message: "Bad meter request" }, 400);
     }
-    const { kind, ipHash } = body;
+    const { kind, keys } = body;
     const limits = METER_LIMITS[kind];
-    if (!limits || typeof ipHash !== "string") return json({ ok: false, message: "Bad meter request" }, 400);
+    if (!limits || !Array.isArray(keys) || keys.length < 1 || keys.length > 2 || keys.some((k) => typeof k !== "string")) {
+      return json({ ok: false, message: "Bad meter request" }, 400);
+    }
 
     const today = new Date().toISOString().slice(0, 10);
     let s = (await this.ctx.storage.get("counters")) || null;
     if (!s || s.date !== today) s = { date: today, global: {}, perIp: {} };
 
     const g = s.global[kind] || 0;
-    const key = kind + ":" + ipHash;
-    const mine = s.perIp[key] || 0;
-
-    if (mine >= limits.perIp) {
-      return json({ ok: false, message: "Daily limit reached for your connection — resets at midnight UTC. You can still enter items manually." });
-    }
     if (g >= limits.global) {
       return json({ ok: false, message: "Splitty's daily budget is used up — resets at midnight UTC. You can still enter items manually." });
     }
+    // Every principal (IP, and account when signed in) must be under its cap.
+    for (const k of keys) {
+      if ((s.perIp[kind + ":" + k] || 0) >= limits.perIp) {
+        return json({ ok: false, message: "Daily limit reached — resets at midnight UTC. You can still enter items manually." });
+      }
+    }
 
     s.global[kind] = g + 1;
-    s.perIp[key] = mine + 1;
+    for (const k of keys) {
+      const key = kind + ":" + k;
+      s.perIp[key] = (s.perIp[key] || 0) + 1;
+    }
     await this.ctx.storage.put("counters", s);
     return json({ ok: true });
   }

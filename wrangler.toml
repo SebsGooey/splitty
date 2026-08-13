@@ -6,8 +6,11 @@ compatibility_date = "2026-08-01"
 directory = "public"
 binding = "ASSETS"
 
-# Optional plain-text config (secrets are set with `wrangler secret put`, never here):
-# [vars]
+# Plain-text config (secrets are set with `wrangler secret put`, never here).
+# GOOGLE_CLIENT_ID is public by design; with the SESSION_SECRET secret present
+# it gates bill creation + receipt scanning behind Google sign-in.
+[vars]
+GOOGLE_CLIENT_ID = "572976983973-uuue8q3u19inauo1q1n9osvjfrgk5miq.apps.googleusercontent.com"
 # PARSE_MODEL = "claude-opus-5"        # or "claude-haiku-4-5" for the cheap toggle
 # TURNSTILE_SITE_KEY = "..."           # enables the Turnstile widget when set
 
