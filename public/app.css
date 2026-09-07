@@ -84,6 +84,7 @@ input:focus, select:focus { outline: 2px solid var(--ink); border-color: var(--i
 /* Item editor rows */
 .item-row { display: flex; gap: 6px; margin-bottom: 7px; align-items: center; }
 .item-row .name { flex: 1; }
+.item-row .qty { width: 54px; text-align: center; padding-left: 4px; padding-right: 4px; }
 .item-row .price { width: 92px; text-align: right; }
 .item-row .rm {
   border: none; background: none; color: var(--ink-soft); font-size: 1.05rem;
@@ -121,7 +122,7 @@ input:focus, select:focus { outline: 2px solid var(--ink); border-color: var(--i
 .item.mine { background: #fdf0ec; border-color: var(--accent); }
 .item .name { flex: 1; font-size: .9rem; line-height: 1.25; }
 .item .name small { display: block; color: var(--ink-soft); font-size: .72rem; }
-.item .who { display: flex; gap: 3px; flex: none; }
+.item .who { display: flex; gap: 6px; flex: none; padding-right: 4px; }
 .avatar {
   width: 22px; height: 22px; border-radius: 50%; color: #fff;
   font-size: .62rem; font-weight: 800; display: inline-flex;
@@ -129,7 +130,21 @@ input:focus, select:focus { outline: 2px solid var(--ink); border-color: var(--i
   border: 1.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25);
 }
 .item .price { flex: none; font-size: .9rem; font-weight: 700; min-width: 62px; text-align: right; }
-.item .split-tag { flex: none; font-size: .68rem; color: var(--accent); font-weight: 800; }
+.item .split-tag { flex: none; font-size: .68rem; color: var(--accent); font-weight: 800; white-space: nowrap; }
+.item:focus-visible { outline: 2px solid var(--ink); }
+.avatar { position: relative; }
+.avatar .units {
+  position: absolute; right: -7px; bottom: -6px; font-style: normal; font-size: .52rem; font-weight: 800;
+  background: var(--ink); color: #fff; border-radius: 999px; padding: 0 3px; line-height: 1.3; border: 1px solid #fff;
+}
+/* How-many stepper on multi-quantity lines you've claimed */
+.stepper { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.stepper button {
+  width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--accent); background: #fff;
+  color: var(--accent); font: inherit; font-size: 1rem; font-weight: 800; line-height: 1; padding: 0;
+}
+.stepper button:disabled { opacity: .35; }
+.stepper b { min-width: 18px; text-align: center; font-size: .85rem; color: var(--accent); }
 
 /* Totals */
 .trow { display: flex; justify-content: space-between; font-size: .92rem; padding: 3px 4px; }

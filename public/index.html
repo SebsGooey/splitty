@@ -186,12 +186,13 @@ function showError(msg) {
 function addRow(name = "", priceCents = null, qty = 1) {
   const row = document.createElement("div");
   row.className = "item-row";
-  if (qty > 1) row.dataset.qty = qty;
   row.innerHTML =
     '<input type="text" class="name" placeholder="Item" maxlength="80" autocomplete="off">' +
-    '<input type="number" class="price" placeholder="0.00" min="0" step="0.01">' +
+    '<input type="number" class="qty" min="1" max="99" step="1" value="1" title="quantity on this line — people can each claim how many they had" aria-label="quantity">' +
+    '<input type="number" class="price" placeholder="0.00" min="0" step="0.01" title="line total">' +
     '<button class="rm" title="Remove" type="button">✕</button>';
   row.querySelector(".name").value = name;
+  row.querySelector(".qty").value = qty > 1 ? qty : 1;
   if (priceCents !== null) row.querySelector(".price").value = (priceCents / 100).toFixed(2);
   row.querySelector(".rm").onclick = () => { row.remove(); updateTotal(); };
   row.querySelectorAll("input").forEach((i) => i.addEventListener("input", updateTotal));
@@ -199,11 +200,13 @@ function addRow(name = "", priceCents = null, qty = 1) {
   return row;
 }
 
+const readQty = (row) => { const q = parseInt(row.querySelector(".qty").value, 10); return Number.isInteger(q) && q >= 1 && q <= 99 ? q : 1; };
+
 function readItems() {
   return [...document.querySelectorAll(".item-row")]
     .map((row) => ({
       name: row.querySelector(".name").value.trim(),
-      qty: Number(row.dataset.qty) || 1,
+      qty: readQty(row),
       priceCents: toCents(row.querySelector(".price").value),
     }))
     .filter((i) => i.name);

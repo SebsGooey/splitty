@@ -8,6 +8,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect x=%2710%27 y=%274%27 width=%2744%27 height=%2756%27 rx=%274%27 fill=%27%23fffdf7%27/%3E%3Cpath d=%27M18 20h28M18 30h28M18 40h18%27 stroke=%27%231a1a1a%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2746%27 cy=%2744%27 r=%278%27 fill=%27%23e0523a%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
 <script src="/pay.js"></script>
+<script src="/money.js"></script>
 </head>
 <body>
 <div class="conn" id="conn">reconnecting…</div>
@@ -223,57 +224,6 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("online", () => connect());
 
-// ---------- money math: exact allocation with largest remainder ----------
-function allocate(totalCents, weights) {
-  const sumW = weights.reduce((a, b) => a + b, 0);
-  if (sumW <= 0 || totalCents <= 0) return weights.map(() => 0);
-  const exact = weights.map((w) => (totalCents * w) / sumW);
-  const base = exact.map(Math.floor);
-  let leftover = totalCents - base.reduce((a, b) => a + b, 0);
-  const order = exact
-    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-    .sort((a, b) => b.frac - a.frac || a.i - b.i);
-  for (let k = 0; k < leftover; k++) base[order[k % order.length].i]++;
-  return base;
-}
-
-function computeTotals(b) {
-  const subtotal = b.items.reduce((a, i) => a + i.priceCents, 0);
-  const shares = Object.fromEntries(b.people.map((p) => [p.id, 0]));
-  const perPersonItems = Object.fromEntries(b.people.map((p) => [p.id, []]));
-  let claimed = 0;
-  for (const item of b.items) {
-    const owners = (b.claims[item.id] || []).filter((pid) => pid in shares);
-    if (!owners.length) continue;
-    claimed += item.priceCents;
-    const parts = allocate(item.priceCents, owners.map(() => 1));
-    owners.forEach((pid, idx) => {
-      shares[pid] += parts[idx];
-      perPersonItems[pid].push({ item, part: parts[idx], of: owners.length });
-    });
-  }
-  const unclaimed = subtotal - claimed;
-  const tipTotal = b.tip.mode === "percent" ? Math.round((subtotal * b.tip.value) / 100) : b.tip.value;
-  // Weights drive tax/tip allocation. If every item is $0 (all-zero-price bill)
-  // the proportional weights vanish — fall back to an equal split so tax/tip
-  // still land on people instead of nobody.
-  const weights = subtotal === 0 && b.people.length
-    ? [...b.people.map(() => 1), 0]
-    : [...b.people.map((p) => shares[p.id]), unclaimed];
-  const taxAlloc = allocate(b.taxCents, weights);
-  const tipAlloc = allocate(tipTotal, weights);
-  const perPerson = b.people.map((p, idx) => ({
-    person: p,
-    items: perPersonItems[p.id],
-    shareCents: shares[p.id],
-    taxCents: taxAlloc[idx],
-    tipCents: tipAlloc[idx],
-    totalCents: shares[p.id] + taxAlloc[idx] + tipAlloc[idx],
-  }));
-  return { subtotal, tipTotal, unclaimed, perPerson,
-    unclaimedTax: taxAlloc[b.people.length] || 0, unclaimedTip: tipAlloc[b.people.length] || 0 };
-}
-
 // ---------- views ----------
 function showView(name) {
   $("joinView").classList.toggle("hidden", name !== "join");
@@ -356,33 +306,52 @@ function render() {
   }
 
   $("claimHint").innerHTML = activePersonId
-    ? `Tap the items <b>${esc(bill.people.find((p) => p.id === activePersonId)?.name || "")}</b> had. Tap again to remove. Shared items split evenly.`
+    ? `Tap the items <b>${esc(bill.people.find((p) => p.id === activePersonId)?.name || "")}</b> had — tap again to let go. Shared items split evenly${bill.items.some((i) => (i.qty || 1) > 1) ? "; on lines with a quantity, use − / + for how many were yours" : ""}.`
     : (bill.people.length ? "Join (or pick yourself) to claim items." : "Add everyone as they open the link — or join yourself first.");
 
   // items
   const el = $("items");
   el.innerHTML = "";
+  const claimToken = () => (activePersonId === me?.personId ? me.token : creatorToken);
+  const setUnits = (item, units) => {
+    if (bill.locked && !isCreator) return showError("This bill is locked.");
+    if (!activePersonId) return showView("join");
+    sendMsg({ type: "set_claim", itemId: item.id, personId: activePersonId, units, token: claimToken() });
+  };
   for (const item of bill.items) {
-    const owners = bill.claims[item.id] || [];
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "item" + (activePersonId && owners.includes(activePersonId) ? " mine" : "");
-    const avatars = owners.map((pid) => {
+    const owners = claimEntries(bill, item.id).filter(([pid, u]) => u > 0 && bill.people.some((p) => p.id === pid));
+    const qty = item.qty || 1;
+    const totalUnits = owners.reduce((a, [, u]) => a + u, 0);
+    const myUnits = activePersonId ? unitsOf(bill, item.id, activePersonId) : 0;
+    const row = document.createElement("div");
+    row.className = "item" + (myUnits > 0 ? " mine" : "");
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    const avatars = owners.map(([pid, u]) => {
       const p = bill.people.find((x) => x.id === pid);
-      return p ? `<span class="avatar" style="background:${p.color}" title="${esc(p.name)}">${esc(initials(p.name))}</span>` : "";
+      return p ? `<span class="avatar" style="background:${p.color}" title="${esc(p.name)}${qty > 1 ? ` · ${u} of ${qty}` : ""}">${esc(initials(p.name))}${qty > 1 && u > 1 ? `<i class="units">×${u}</i>` : ""}</span>` : "";
     }).join("");
+    let tag = "";
+    if (qty > 1 && totalUnits) tag = `<span class="split-tag">${Math.min(totalUnits, qty)}/${qty}${totalUnits > qty ? " shared" : ""}</span>`;
+    else if (qty === 1 && owners.length > 1) tag = `<span class="split-tag">÷${owners.length}</span>`;
+    const stepper = qty > 1 && myUnits > 0
+      ? `<span class="stepper" aria-label="how many you had"><button type="button" class="st-minus" aria-label="one fewer">−</button><b>${myUnits}</b><button type="button" class="st-plus" aria-label="one more"${myUnits >= qty ? " disabled" : ""}>+</button></span>`
+      : "";
     row.innerHTML =
-      `<span class="name">${esc(item.name)}${item.qty > 1 ? `<small>qty ${item.qty}</small>` : ""}</span>` +
+      `<span class="name">${esc(item.name)}${qty > 1 ? `<small>qty ${qty} · ${fmt(Math.round(item.priceCents / qty))} each</small>` : ""}</span>` +
+      stepper +
       `<span class="who">${avatars}</span>` +
-      (owners.length > 1 ? `<span class="split-tag">÷${owners.length}</span>` : "") +
+      tag +
       `<span class="price">${fmt(item.priceCents)}</span>`;
-    row.onclick = () => {
-      if (bill.locked && !isCreator) return showError("This bill is locked.");
-      if (!activePersonId) return showView("join");
-      const claimed = !(bill.claims[item.id] || []).includes(activePersonId);
-      sendMsg({ type: "set_claim", itemId: item.id, personId: activePersonId, claimed,
-        token: activePersonId === me?.personId ? me.token : creatorToken });
+    // Tap the row: claim one (or, if already claimed, let go of all of them).
+    row.onclick = (e) => {
+      if (e.target.closest(".stepper")) return;
+      setUnits(item, myUnits > 0 ? 0 : 1);
     };
+    row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); row.onclick(e); } };
+    const minus = row.querySelector(".st-minus"), plus = row.querySelector(".st-plus");
+    if (minus) minus.onclick = (e) => { e.stopPropagation(); setUnits(item, myUnits - 1); };
+    if (plus) plus.onclick = (e) => { e.stopPropagation(); setUnits(item, Math.min(qty, myUnits + 1)); };
     el.appendChild(row);
   }
 
@@ -412,8 +381,13 @@ function render() {
     const card = document.createElement("div");
     card.className = "person-card" + (isPaid ? " paid" : "");
     card.style.setProperty("--pc", row.person.color);
-    const list = row.items.map(({ item, part, of }) =>
-      `<li><span>${esc(item.name)}${of > 1 ? ` <em>(1/${of})</em>` : ""}</span><span>${fmt(part)}</span></li>`).join("");
+    const list = row.items.map(({ item, part, units, of, sharers }) => {
+      const qty = item.qty || 1;
+      let note = "";
+      if (qty > 1) note = ` <em>×${units}${sharers > 1 || units < of ? ` of ${of}` : ""}</em>`;
+      else if (sharers > 1) note = ` <em>(1/${sharers})</em>`;
+      return `<li><span>${esc(item.name)}${note}</span><span>${fmt(part)}</span></li>`;
+    }).join("");
     const badge = isPayee ? '<span class="paid-badge host">paid the bill</span>' : (isPaid ? '<span class="paid-badge">✓ paid</span>' : "");
     card.innerHTML =
       `<h3><span class="avatar" style="background:${row.person.color}">${esc(initials(row.person.name))}</span>` +
@@ -572,18 +546,20 @@ function addEditRow(item) {
   const row = document.createElement("div");
   row.className = "item-row";
   if (item?.id) row.dataset.itemId = item.id;
-  if (item?.qty > 1) row.dataset.qty = item.qty;
   row.innerHTML =
     '<input type="text" class="name" placeholder="Item" maxlength="80">' +
-    '<input type="number" class="price" min="0" step="0.01" placeholder="0.00">' +
+    '<input type="number" class="qty" min="1" max="99" step="1" value="1" title="quantity on this line" aria-label="quantity">' +
+    '<input type="number" class="price" min="0" step="0.01" placeholder="0.00" title="line total">' +
     '<button class="rm" type="button" title="Remove">✕</button>';
   if (item) {
     row.querySelector(".name").value = item.name;
+    row.querySelector(".qty").value = item.qty || 1;
     row.querySelector(".price").value = (item.priceCents / 100).toFixed(2);
   }
   row.querySelector(".rm").onclick = () => row.remove();
   $("editRows").appendChild(row);
 }
+const readQty = (row) => { const q = parseInt(row.querySelector(".qty")?.value, 10); return Number.isInteger(q) && q >= 1 && q <= 99 ? q : 1; };
 $("editAddItem").onclick = () => addEditRow();
 $("editCancel").onclick = () => showView("bill");
 $("editSave").onclick = () => {
@@ -591,7 +567,7 @@ $("editSave").onclick = () => {
     .map((row) => ({
       id: row.dataset.itemId,
       name: row.querySelector(".name").value.trim(),
-      qty: Number(row.dataset.qty) || 1,
+      qty: readQty(row),
       priceCents: toCents(row.querySelector(".price").value),
     }))
     .filter((i) => i.name);

@@ -13,6 +13,8 @@
 
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 const BASE = process.env.BASE_URL || "http://127.0.0.1:8787";
 const SECRET = process.env.SESSION_SECRET || "dev-secret-for-local-tests-only";
@@ -222,10 +224,10 @@ test("realtime: join, claim, shared split, exact totals, version ordering", asyn
   b.send({ type: "set_claim", itemId: fries, personId: joinedB.personId, claimed: true, token: joinedB.token });
   a.send({ type: "set_claim", itemId: pitcher, personId: joinedA.personId, claimed: true, token: joinedA.token });
   b.send({ type: "set_claim", itemId: pitcher, personId: joinedB.personId, claimed: true, token: joinedB.token });
-  const full = await a.stateWhere((bill) => Object.values(bill.claims).flat().length === 4);
-  assert.deepEqual(full.claims[burger], [joinedA.personId]);
-  assert.deepEqual(full.claims[fries], [joinedB.personId]);
-  assert.equal(full.claims[pitcher].length, 2);
+  const full = await a.stateWhere((bill) => Object.values(bill.claims).reduce((n, e) => n + Object.keys(e).length, 0) === 4);
+  assert.deepEqual(full.claims[burger], { [joinedA.personId]: 1 });
+  assert.deepEqual(full.claims[fries], { [joinedB.personId]: 1 });
+  assert.equal(Object.keys(full.claims[pitcher]).length, 2);
 
   // Money: shares 1499+1200 and 599+1200; tax 360 and tip 18% of 4498=810 split by share weight.
   const shares = [1499 + 1200, 599 + 1200];
@@ -249,7 +251,7 @@ test("realtime: join, claim, shared split, exact totals, version ordering", asyn
 
   // Creator can act for anyone.
   a.send({ type: "set_claim", itemId: burger, personId: joinedB.personId, claimed: true, token: creatorToken });
-  await a.stateWhere((bill) => (bill.claims[burger] || []).includes(joinedB.personId));
+  await a.stateWhere((bill) => joinedB.personId in (bill.claims[burger] || {}));
 
   a.close(); b.close();
 });
@@ -281,7 +283,7 @@ test("realtime: lock blocks joins and claims for non-creators, creator can still
   assert.match((await p.next((m) => m.type === "error")).message, /locked/i);
 
   c.send({ type: "set_claim", itemId: item, personId: joined.personId, claimed: true, token: creatorToken });
-  await p.stateWhere((b) => (b.claims[item] || []).includes(joined.personId));
+  await p.stateWhere((b) => joined.personId in (b.claims[item] || {}));
 
   c.send({ type: "lock", locked: false, token: creatorToken });
   await p.stateWhere((b) => b.locked === false);
@@ -313,7 +315,7 @@ test("realtime: edit_bill keeps claims on surviving items and drops the rest", a
   } });
   const edited = await c.stateWhere((b) => b.restaurant === "Renamed");
   assert.equal(edited.items.length, 2);
-  assert.deepEqual(edited.claims[burger], [me.personId], "claim on the surviving item is kept");
+  assert.deepEqual(edited.claims[burger], { [me.personId]: 1 }, "claim on the surviving item is kept");
   assert.equal(edited.claims[fries], undefined, "claim on the deleted item is dropped");
   assert.equal(edited.items[0].name, "Burger deluxe");
   assert.match(edited.items[1].id, /^i[A-Za-z0-9_-]{8}$/);
@@ -336,7 +338,7 @@ test("realtime: remove_person clears their claims; rename is scoped to the perso
   const item = init.items[0].id;
   a.send({ type: "set_claim", itemId: item, personId: ann.personId, claimed: true, token: ann.token });
   b.send({ type: "set_claim", itemId: item, personId: ben.personId, claimed: true, token: ben.token });
-  await a.stateWhere((s) => (s.claims[item] || []).length === 2);
+  await a.stateWhere((s) => Object.keys(s.claims[item] || {}).length === 2);
 
   b.send({ type: "rename_person", personId: ann.personId, name: "Hacked", token: ben.token });
   assert.match((await b.next((m) => m.type === "error")).message, /not allowed/i);
@@ -347,7 +349,7 @@ test("realtime: remove_person clears their claims; rename is scoped to the perso
   assert.match((await b.next((m) => m.type === "error")).message, /not allowed/i);
   a.send({ type: "remove_person", personId: ben.personId, token: creatorToken });
   const after = await a.stateWhere((s) => s.people.length === 1);
-  assert.deepEqual(after.claims[item], [ann.personId], "removed person's claim is gone, Ann's remains");
+  assert.deepEqual(after.claims[item], { [ann.personId]: 1 }, "removed person's claim is gone, Ann's remains");
   // Removing again is a silent no-op (idempotent).
   a.send({ type: "remove_person", personId: ben.personId, token: creatorToken });
   a.send({ type: "rename_person", personId: ann.personId, name: "Ann", token: ann.token });
@@ -373,6 +375,83 @@ test("realtime: garbage frames are ignored, ping is answered, floods are throttl
   const err = await s.next((m) => m.type === "error" && /slow down|too many joins/i.test(m.message), 6000);
   assert.ok(err, "flooding is rejected");
   s.close();
+});
+
+// ---------- quantity-aware claims ----------
+
+// public/money.js is a plain browser script; evaluate it here so the tests
+// exercise the exact math the bill page runs.
+const money = {};
+vm.createContext(money);
+vm.runInContext(readFileSync(new URL("../public/money.js", import.meta.url), "utf8"), money);
+
+test("money: units split a multi-quantity line in proportion, leftovers stay unclaimed", () => {
+  const people = [{ id: "pA", name: "A", color: "#000" }, { id: "pB", name: "B", color: "#111" }];
+  const base = { items: [{ id: "i1", name: "Beer", qty: 3, priceCents: 1800 }], taxCents: 0, tip: { mode: "percent", value: 0 }, people };
+  // A had 2 of 3, B had 1: 1200 / 600, nothing unclaimed.
+  let t = money.computeTotals({ ...base, claims: { i1: { pA: 2, pB: 1 } } });
+  assert.deepEqual(t.perPerson.map((r) => r.shareCents), [1200, 600]);
+  assert.equal(t.unclaimed, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(t.perPerson[0].items[0])), { item: base.items[0], part: 1200, units: 2, of: 3, sharers: 2 });
+  // Only A, 1 of 3: 600 claimed, 1200 unclaimed.
+  t = money.computeTotals({ ...base, claims: { i1: { pA: 1 } } });
+  assert.deepEqual(t.perPerson.map((r) => r.shareCents), [600, 0]);
+  assert.equal(t.unclaimed, 1200);
+  // Over-claimed (two people each say 2 of 3): split by units, line fully claimed.
+  t = money.computeTotals({ ...base, claims: { i1: { pA: 2, pB: 2 } } });
+  assert.deepEqual(t.perPerson.map((r) => r.shareCents), [900, 900]);
+  assert.equal(t.unclaimed, 0);
+  assert.equal(t.perPerson[0].items[0].of, 4);
+  // Legacy array claims still read as one unit each.
+  t = money.computeTotals({ ...base, claims: { i1: ["pA", "pB"] } });
+  assert.deepEqual(t.perPerson.map((r) => r.shareCents), [600, 600]);
+  assert.equal(t.unclaimed, 600);
+  // Rounding stays exact: $10.00 across 3 units claimed 1/1/1 sums to 1000.
+  const three = [...people, { id: "pC", name: "C", color: "#222" }];
+  t = money.computeTotals({ items: [{ id: "i", name: "x", qty: 3, priceCents: 1000 }], taxCents: 0, tip: { mode: "percent", value: 0 }, people: three, claims: { i: { pA: 1, pB: 1, pC: 1 } } });
+  assert.equal(t.perPerson.reduce((a, r) => a + r.shareCents, 0), 1000);
+  // Tax and tip follow the claimed shares; unclaimed share carries its part too.
+  t = money.computeTotals({ ...base, taxCents: 180, tip: { mode: "percent", value: 10 }, claims: { i1: { pA: 1 } } });
+  assert.equal(t.perPerson[0].totalCents + t.unclaimed + t.unclaimedTax + t.unclaimedTip, 1800 + 180 + 180);
+});
+
+test("realtime: units are validated, clamped to the line qty, and legacy claimed:true still works", async () => {
+  const { billId, creatorToken } = await createBill({ items: [{ name: "Beer", qty: 3, priceCents: 1800 }, { name: "Nachos", qty: 1, priceCents: 1200 }] });
+  const a = openSocket(billId); const b = openSocket(billId);
+  await Promise.all([a.ready, b.ready]);
+  const init = (await a.next((m) => m.type === "state")).bill; await b.next((m) => m.type === "state");
+  const [beer, nachos] = init.items.map((i) => i.id);
+  a.send({ type: "join", name: "Ann" }); const ann = await a.next((m) => m.type === "joined");
+  b.send({ type: "join", name: "Ben" }); const ben = await b.next((m) => m.type === "joined");
+  await a.stateWhere((s) => s.people.length === 2);
+
+  a.send({ type: "set_claim", itemId: beer, personId: ann.personId, units: 2, token: ann.token });
+  b.send({ type: "set_claim", itemId: beer, personId: ben.personId, claimed: true, token: ben.token });
+  const s1 = await a.stateWhere((s) => s.claims[beer] && s.claims[beer][ben.personId]);
+  assert.deepEqual(s1.claims[beer], { [ann.personId]: 2, [ben.personId]: 1 });
+
+  // More than the line holds is clamped; 0 removes; bad numbers are rejected.
+  b.send({ type: "set_claim", itemId: beer, personId: ben.personId, units: 9, token: ben.token });
+  const s2 = await a.stateWhere((s) => s.claims[beer][ben.personId] === 3);
+  assert.equal(s2.claims[beer][ben.personId], 3);
+  b.send({ type: "set_claim", itemId: beer, personId: ben.personId, units: -1, token: ben.token });
+  assert.match((await b.next((m) => m.type === "error")).message, /sensible/i);
+  b.send({ type: "set_claim", itemId: beer, personId: ben.personId, token: ben.token });
+  assert.match((await b.next((m) => m.type === "error")).message, /how many/i);
+  b.send({ type: "set_claim", itemId: beer, personId: ben.personId, units: 0, token: ben.token });
+  const s3 = await a.stateWhere((s) => s.version > s2.version && !(ben.personId in (s.claims[beer] || {})));
+  assert.deepEqual(s3.claims[beer], { [ann.personId]: 2 });
+
+  // qty-1 lines cap at one unit each, however many are asked for.
+  a.send({ type: "set_claim", itemId: nachos, personId: ann.personId, units: 5, token: ann.token });
+  const s4 = await b.stateWhere((s) => s.claims[nachos]);
+  assert.deepEqual(s4.claims[nachos], { [ann.personId]: 1 });
+
+  // Editing the line down to qty 1 clamps Ann's 2 beers to 1.
+  a.send({ type: "edit_bill", token: creatorToken, bill: { items: [{ id: beer, name: "Beer", qty: 1, priceCents: 600 }, { id: nachos, name: "Nachos", priceCents: 1200 }] } });
+  const s5 = await b.stateWhere((s) => s.items[0].qty === 1);
+  assert.deepEqual(s5.claims[beer], { [ann.personId]: 1 });
+  a.close(); b.close();
 });
 
 test("settle up: pay handles are validated and normalised at create time", async () => {

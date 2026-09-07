@@ -89,6 +89,49 @@ function cleanPay(pay) {
   return { value };
 }
 
+// ---------- claims: who had how many of each item ----------
+// claims[itemId] is { personId: units }. Units are whole items (a person who
+// had 2 of the 3 beers claims 2). Cost splits in proportion to units; if fewer
+// units are claimed than the line's qty, the rest stays unclaimed. Bills from
+// before this model stored claims as arrays of personIds — read as 1 unit each
+// and rewritten on the next save.
+const MAX_UNITS = 99;
+
+function normalizeClaims(bill) {
+  let changed = false;
+  const out = {};
+  for (const [itemId, v] of Object.entries(bill.claims || {})) {
+    let entry;
+    if (Array.isArray(v)) {
+      entry = Object.fromEntries(v.filter((pid) => typeof pid === "string").map((pid) => [pid, 1]));
+      changed = true;
+    } else if (v && typeof v === "object") {
+      entry = {};
+      for (const [pid, units] of Object.entries(v)) {
+        if (Number.isInteger(units) && units >= 1 && units <= MAX_UNITS) entry[pid] = units;
+        else changed = true;
+      }
+    } else {
+      changed = true;
+      continue;
+    }
+    if (Object.keys(entry).length) out[itemId] = entry;
+    else changed = true;
+  }
+  bill.claims = out;
+  return changed;
+}
+
+// Drop one person from every claim; delete claims left empty.
+function dropPersonClaims(bill, personId) {
+  for (const [itemId, entry] of Object.entries(bill.claims)) {
+    if (personId in entry) {
+      delete entry[personId];
+      if (!Object.keys(entry).length) delete bill.claims[itemId];
+    }
+  }
+}
+
 function publicBill(bill) {
   return {
     ...bill,
@@ -645,7 +688,9 @@ export class BillRoom {
   }
 
   async loadBill() {
-    return this.ctx.storage.get("bill");
+    const bill = await this.ctx.storage.get("bill");
+    if (bill) normalizeClaims(bill); // legacy array claims → { personId: units }
+    return bill;
   }
 
   async saveBill(bill) {
@@ -769,22 +814,32 @@ export class BillRoom {
 
       case "set_claim": {
         // Idempotent by design: a replayed set_claim is a no-op, never an inversion.
+        // `units` (0 = unclaim) is the number of this line the person had;
+        // `claimed: true/false` is the older form and means "1 unit" / "none".
         if (bill.locked && !isCreator) return send({ type: "error", message: "This bill is locked." });
-        const { itemId, personId, claimed } = msg;
-        if (!bill.items.some((i) => i.id === itemId)) return send({ type: "error", message: "That item no longer exists." });
+        const { itemId, personId } = msg;
+        const item = bill.items.find((i) => i.id === itemId);
+        if (!item) return send({ type: "error", message: "That item no longer exists." });
         if (!bill.people.some((p) => p.id === personId)) return send({ type: "error", message: "That person no longer exists." });
         if (!canActFor(personId)) return send({ type: "error", message: "You can only claim items for yourself." });
-        const arr = bill.claims[itemId] || [];
-        const has = arr.includes(personId);
-        if (claimed && !has) {
-          bill.claims[itemId] = [...arr, personId];
-          changed = true;
-        } else if (!claimed && has) {
-          const next = arr.filter((x) => x !== personId);
-          if (next.length) bill.claims[itemId] = next;
+        const entry = bill.claims[itemId] || {};
+        const current = entry[personId] || 0;
+        let units;
+        if (Number.isInteger(msg.units)) units = msg.units;
+        else if ("claimed" in msg) units = msg.claimed ? (current || 1) : 0;
+        else return send({ type: "error", message: "Say how many you had." });
+        if (units < 0 || units > MAX_UNITS) return send({ type: "error", message: "That's not a sensible number of items." });
+        units = Math.min(units, item.qty || 1); // nobody had more than the line holds
+        if (units === current) break;
+        if (units > 0) {
+          bill.claims[itemId] = { ...entry, [personId]: units };
+        } else {
+          const next = { ...entry };
+          delete next[personId];
+          if (Object.keys(next).length) bill.claims[itemId] = next;
           else delete bill.claims[itemId];
-          changed = true;
         }
+        changed = true;
         break;
       }
 
@@ -806,11 +861,7 @@ export class BillRoom {
         if (!p) break; // already gone — idempotent
         if (!canActFor(p.id)) return send({ type: "error", message: "Not allowed." });
         bill.people = bill.people.filter((x) => x.id !== p.id);
-        for (const [itemId, arr] of Object.entries(bill.claims)) {
-          const next = arr.filter((x) => x !== p.id);
-          if (next.length) bill.claims[itemId] = next;
-          else delete bill.claims[itemId];
-        }
+        dropPersonClaims(bill, p.id);
         if (bill.paid) delete bill.paid[p.id];
         if (bill.creatorPersonId === p.id) delete bill.creatorPersonId;
         changed = true;
@@ -855,9 +906,12 @@ export class BillRoom {
         bill.items = fields.items;
         bill.taxCents = fields.taxCents;
         bill.tip = fields.tip;
-        const validItems = new Set(bill.items.map((i) => i.id));
-        for (const itemId of Object.keys(bill.claims)) {
-          if (!validItems.has(itemId)) delete bill.claims[itemId];
+        // Claims on deleted items go; units above a reduced qty are clamped.
+        const qtyById = new Map(bill.items.map((i) => [i.id, i.qty || 1]));
+        for (const [itemId, entry] of Object.entries(bill.claims)) {
+          const qty = qtyById.get(itemId);
+          if (!qty) { delete bill.claims[itemId]; continue; }
+          for (const pid of Object.keys(entry)) if (entry[pid] > qty) entry[pid] = qty;
         }
         changed = true;
         break;
