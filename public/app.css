@@ -49,6 +49,7 @@ h1 a { color: inherit; text-decoration: none; }
 }
 .hint { font-size: .75rem; color: var(--ink-soft); margin: 10px 0 0; text-align: center; line-height: 1.5; }
 .hint b { color: var(--accent); }
+.hint a { color: inherit; }
 .error-box {
   border: 2px dashed var(--accent); color: var(--accent);
   border-radius: 12px; padding: 10px 12px; margin: 10px 0;
@@ -227,3 +228,20 @@ details.payd[open] summary { margin-bottom: 4px; }
 }
 .footer-note { text-align: center; color: var(--ink-soft); font-size: .7rem; margin-top: 18px; line-height: 1.5; }
 .hidden { display: none !important; }
+
+/* Legal pages (terms, privacy) */
+.legal { font-size: .82rem; line-height: 1.55; overflow-wrap: anywhere; }
+.legal .meta { color: var(--ink-soft); font-size: .72rem; margin: 0 0 4px; }
+.legal h2 {
+  font-size: .78rem; letter-spacing: .14em; text-transform: uppercase; color: var(--ink);
+  margin: 22px 0 8px; padding-top: 12px; border-top: 2px dashed var(--line);
+}
+.legal p { margin: 0 0 10px; }
+.legal ul, .legal ol { margin: 0 0 10px; padding-left: 20px; }
+.legal li { margin-bottom: 5px; }
+.legal a { color: var(--accent); }
+.legal code { font-size: .78rem; background: #f1eee2; padding: 1px 4px; border-radius: 4px; white-space: nowrap; }
+.legal table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 10px; font-size: .76rem; }
+.legal th, .legal td { text-align: left; vertical-align: top; padding: 5px 6px; border-bottom: 1px dashed var(--line); }
+.legal th { color: var(--ink-soft); font-weight: 700; }
+.footer-note a { color: inherit; }

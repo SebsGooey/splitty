@@ -54,6 +54,7 @@ function openSocket(billId) {
   const queue = [];
   const waiters = [];
   let closed = null;
+  const closedP = new Promise((res) => sock.addEventListener("close", (e) => res({ code: e.code, reason: e.reason })));
   sock.addEventListener("message", (e) => {
     if (e.data === "pong") return;
     const msg = JSON.parse(e.data);
@@ -90,6 +91,7 @@ function openSocket(billId) {
       throw new Error("no matching state broadcast");
     },
     get closed() { return closed; },
+    closedP,
     close: () => sock.close(),
   };
 }
@@ -709,20 +711,87 @@ test("stripe: webhook verifies signatures and drives Pro through the subscriptio
   assert.equal(nobody.data.applied, false);
 });
 
+test("admin: deletion on request — an account record, one person on a bill, or a whole bill", async () => {
+  const admin = mintSession();
+  // Account record: create by touching /api/me, delete, gone from the list, second delete is 404.
+  const sub = "deleteme-" + Date.now();
+  const cookie = mintSession({ sub, email: sub + "@example.com", name: "Del Me" });
+  await api("/api/me", { cookie });
+  assert.ok((await api("/api/admin/users", { cookie: admin })).data.users.some((u) => u.sub === sub), "record exists before deletion");
+  assert.equal((await api("/api/admin/accounts/delete", { method: "POST", body: { sub }, cookie })).status, 403, "non-admins can't delete");
+  const del = await api("/api/admin/accounts/delete", { method: "POST", body: { sub }, cookie: admin });
+  assert.equal(del.status, 200);
+  assert.equal(del.data.deleted.email, sub + "@example.com");
+  assert.ok(!(await api("/api/admin/users", { cookie: admin })).data.users.some((u) => u.sub === sub), "record is gone");
+  assert.equal((await api("/api/admin/accounts/delete", { method: "POST", body: { sub }, cookie: admin })).status, 404);
+  // A live Stripe subscription blocks deletion (cancel in Stripe first).
+  const payer = "payer-" + Date.now();
+  await api("/api/me", { cookie: mintSession({ sub: payer, email: payer + "@example.com" }) });
+  await postWebhook({ id: "evt_del_" + payer, type: "checkout.session.completed", data: { object: { mode: "subscription", client_reference_id: payer, customer: "cus_del", subscription: "sub_del" } } });
+  const blocked = await api("/api/admin/accounts/delete", { method: "POST", body: { email: payer + "@example.com" }, cookie: admin });
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.data.error, /Stripe/);
+
+  // Bill: two people join; remove one (live broadcast), then delete the bill (sockets closed, 404 after).
+  const { billId } = (await api("/api/bills", { method: "POST", body: SAMPLE, cookie: admin })).data;
+  const a = openSocket(billId); await a.ready;
+  a.send({ type: "join", name: "Ann" });
+  const ann = await a.next((m) => m.type === "joined");
+  const b = openSocket(billId); await b.ready;
+  b.send({ type: "join", name: "Bob" });
+  const bob = await b.next((m) => m.type === "joined");
+  await a.stateWhere((s) => s.people.length === 2);
+  assert.equal((await api("/api/admin/bills/remove-person", { method: "POST", body: { bill: billId, personId: bob.personId }, cookie: mintSession({ sub: "nobody", email: "nobody@example.com" }) })).status, 403);
+  const rm = await api("/api/admin/bills/remove-person", { method: "POST", body: { bill: "https://splitty.cc/b/" + billId + "#edit=whatever", personId: bob.personId }, cookie: admin });
+  assert.equal(rm.status, 200);
+  assert.equal(rm.data.removed, "Bob");
+  const after = await a.stateWhere((s) => s.people.length === 1);
+  assert.equal(after.people[0].id, ann.personId);
+  assert.equal((await api("/api/admin/bills/delete", { method: "POST", body: { bill: "not a bill" }, cookie: admin })).status, 400);
+  const gone = await api("/api/admin/bills/delete", { method: "POST", body: { bill: billId }, cookie: admin });
+  assert.equal(gone.status, 200);
+  assert.equal(gone.data.existed, true);
+  assert.equal((await api("/api/bills/" + billId)).status, 404, "bill is gone");
+  const closes = await Promise.all([a, b].map((s) => Promise.race([s.closedP, new Promise((_, rej) => setTimeout(() => rej(new Error("socket not closed")), 4000))])));
+  assert.deepEqual(closes.map((c) => c.reason), ["expired", "expired"], "open sockets are closed with 'expired' when the bill is deleted");
+  assert.equal((await api("/api/admin/bills/delete", { method: "POST", body: { bill: billId }, cookie: admin })).data.existed, false, "deleting again is a no-op");
+});
+
+test("legal pages: terms and privacy serve, link to each other, are linked from both footers, no placeholders", async () => {
+  for (const p of ["/terms.html", "/privacy.html"]) {
+    const res = await fetch(BASE + p);
+    assert.equal(res.status, 200, p);
+    assert.match(res.headers.get("content-type") || "", /text\/html/, p);
+    const html = await res.text();
+    assert.match(html, /<title>Splitty · /, p + " title");
+    assert.match(html, /class="legal"/, p + " uses the shared legal styles");
+    assert.match(html, /Effective [A-Z][a-z]+ \d{1,2}, 20\d\d/, p + " has an effective date");
+    assert.match(html, /Indranet Technologies/, p + " names the operator");
+    assert.match(html, /hello@splitty\.cc/, p + " gives a contact address");
+    assert.ok(html.includes('href="/privacy.html"') && html.includes('href="/terms.html"'), p + " links to both legal pages");
+    assert.doesNotMatch(html, /TODO|\[insert|\[your |\[company|lorem ipsum|\{\{/i, p + " has no placeholders");
+    assert.doesNotMatch(html, /<script/i, p + " needs no script");
+  }
+  const home = await (await fetch(BASE + "/")).text();
+  assert.ok(home.includes('href="/terms.html"') && home.includes('href="/privacy.html"'), "create page footer links to both");
+  const bill = await (await fetch(BASE + "/b/" + "x".repeat(22))).text();
+  assert.ok(bill.includes('href="/terms.html"') && bill.includes('href="/privacy.html"'), "bill page footer links to both");
+});
+
 // Opt-in (`node test/integration.mjs --meter`): it burns the local per-IP daily
 // create budget, so every later create from this machine 429s until the local
 // DO state is reset (`npm run dev:reset`). Keep it last.
-if (process.argv.includes("--meter")) test("meter: per-IP create cap trips at 30/day and reports a clear message", async () => {
+if (process.argv.includes("--meter")) test("meter: per-IP create cap trips (30/day, 300 with DEV=1) and reports a clear message", async () => {
   // Fresh DO state is not guaranteed between runs; count how many creates it takes
   // to hit the cap and just check the cap is enforced with a 429 + message.
   const cookie = mintSession({ sub: "meter-user" });
   let tripped = null;
-  for (let i = 0; i < 35; i++) {
+  for (let i = 0; i < 310; i++) {
     const r = await api("/api/bills", { method: "POST", body: SAMPLE, cookie });
     if (r.status === 429) { tripped = r; break; }
     assert.equal(r.status, 200);
   }
-  assert.ok(tripped, "expected the daily per-IP create cap to trip within 35 attempts");
+  assert.ok(tripped, "expected the daily per-IP create cap to trip within 310 attempts (30/day, or 300 with DEV=1)");
   assert.match(tripped.data.error, /daily limit|budget/i);
 });
 

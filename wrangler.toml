@@ -21,7 +21,7 @@ GOOGLE_CLIENT_ID = "572976983973-uuue8q3u19inauo1q1n9osvjfrgk5miq.apps.googleuse
 # Page loads on *.workers.dev and www. redirect here (API calls are not redirected).
 CANONICAL_HOST = "splitty.cc"
 # PARSE_MODEL = "claude-opus-5"        # or "claude-haiku-4-5" for the cheap toggle
-# TURNSTILE_SITE_KEY = "..."           # enables the Turnstile widget when set
+# TURNSTILE_SITE_KEY = "..."           # server half only — the create page has no widget yet (README → Cost control)
 #
 # Tiers / billing — set these in the dashboard (Settings → Variables and Secrets):
 #   ADMIN_EMAILS          comma-separated Google emails that get Pro + the /admin page

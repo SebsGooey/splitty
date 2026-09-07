@@ -32,7 +32,7 @@ Pro comes from a Stripe subscription, an admin grant, or being listed in `ADMIN_
 
 ### Setup
 
-1. **Admins** — in Cloudflare → Workers & Pages → splitty → Settings → Variables and Secrets, add `ADMIN_EMAILS` (plain text is fine; `keep_vars = true` in `wrangler.toml` keeps dashboard variables across deploys) with the Google email(s) that should be Pro for free and see **/admin.html** (list accounts, grant/revoke Pro, grant by email before someone has signed in).
+1. **Admins** — in Cloudflare → Workers & Pages → splitty → Settings → Variables and Secrets, add `ADMIN_EMAILS` (plain text is fine; `keep_vars = true` in `wrangler.toml` keeps dashboard variables across deploys) with the Google email(s) that should be Pro for free and see **/admin.html** (list accounts, grant/revoke Pro, grant by email before someone has signed in, and handle privacy requests: delete an account record, delete a bill, or take one person off a bill).
 2. **Stripe** (optional until you want to charge):
    - Create a product with a recurring price — $2.99 / month — and copy its `price_…` id → `STRIPE_PRICE_ID` (variable).
    - Developers → API keys → secret key → `STRIPE_SECRET_KEY` (secret).
@@ -40,16 +40,18 @@ Pro comes from a Stripe subscription, an admin grant, or being listed in `ADMIN_
    - Optional: `PRO_PRICE_LABEL` if the price isn't $2.99 / month.
    - Enable the Customer Portal in Stripe (Settings → Billing → Customer portal) so "manage subscription" works.
 
+3. **Legal pages** — `/terms.html` and `/privacy.html` are linked from the create and bill page footers. Paste their URLs into the Google OAuth consent screen (Cloud console → APIs & Services → OAuth consent screen → app domain) and into Stripe (Settings → Business → Public details) before charging anyone.
+
    Until all three `STRIPE_*` values exist the upgrade button reads "Pro — coming soon" and only admin grants can make someone Pro. Webhooks are signature-verified (5-minute tolerance), idempotent by event id, and tolerate both the classic and the 2025+ (`items.data[0].current_period_end`) subscription shapes. A cancelled subscription drops to Free at once; `past_due` keeps Pro for a 3-day grace while Stripe retries the card.
 
 ## Architecture
 
 One Cloudflare Workers project, no build step, no framework:
 
-- **`public/`** — static vanilla-JS frontend (create page, bill page, admin page, shared `pay.js` / `money.js`) served via Workers Static Assets.
+- **`public/`** — static vanilla-JS frontend (create page, bill page, admin page, terms + privacy pages, shared `pay.js` / `money.js`) served via Workers Static Assets.
 - **`src/worker.js`** — the Worker (routing, bill creation, receipt parsing via the Anthropic API) plus two Durable Objects:
   - **`BillRoom`** (one per bill) — SQLite-backed DO that is simultaneously the database, the write serializer (single-threaded actor: simultaneous taps can't conflict), and the WebSocket hub (Hibernation API; full-state versioned broadcasts).
-  - **`Meter`** (singleton) — daily per-IP and global rate caps on the endpoints that cost money.
+  - **`Meter`** (singleton) — daily per-IP, per-account (when signed in) and global rate caps on the endpoints that cost money.
   - **`Accounts`** (singleton, SQLite) — sign-in accounts, free-tier usage per month, Pro entitlements (Stripe / admin), Stripe webhook idempotency.
 - **Security model** — capability URLs (128-bit bill IDs); hashed creator + per-person tokens; idempotent `set_claim` / `set_paid` intents (replays are no-ops); payment handles validated per network server-side and rendered only as deep links; same-origin enforcement on POSTs; per-connection message throttles; CSP + no-referrer + noindex headers.
 
@@ -66,12 +68,12 @@ npm run dev        # http://localhost:8787
 Integration tests run against the live `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing:
 
 ```bash
-npm test           # 21 tests: auth, create, realtime claims/locks/edits, quantities, settle up, tiers, admin, Stripe webhooks, throttles
+npm test           # 23 tests: auth, create, realtime claims/locks/edits, quantities, settle up, tiers, admin + deletion requests, Stripe webhooks, throttles, legal pages
 npm run test:meter # also trips the daily per-IP create cap (burns local budget — run last)
 npm run dev:reset  # clear local Durable Object state, then restart npm run dev
 ```
 
-The tests mint a session cookie with the same HMAC scheme the Worker uses (`SESSION_SECRET` from `.dev.vars`), so the signed-in path is exercised without touching Google; the default test identity is `admin@example.com` (set `ADMIN_EMAILS=admin@example.com` locally so it is Pro and never trips the free quota). Stripe webhook tests sign their own payloads with `STRIPE_WEBHOOK_SECRET`. Set a dummy `ANTHROPIC_API_KEY` locally to exercise the scan gate.
+The tests mint a session cookie with the same HMAC scheme the Worker uses (`SESSION_SECRET` from `.dev.vars`), so the signed-in path is exercised without touching Google; the default test identity is `admin@example.com` (set `ADMIN_EMAILS=admin@example.com` locally so it is Pro and never trips the free quota). Stripe webhook tests sign their own payloads with `STRIPE_WEBHOOK_SECRET`. Set a dummy `ANTHROPIC_API_KEY` locally to exercise the scan gate. `DEV=1` (also in the example) multiplies the daily create caps by 10 locally so a day of repeated runs doesn't hit the 30/IP cap — never set it in production.
 
 ## Deploy
 
@@ -88,4 +90,4 @@ Then enable receipt scanning (optional — manual entry works without it):
 npx wrangler secret put ANTHROPIC_API_KEY   # paste your key at the prompt
 ```
 
-Cost control: parse requests are capped at 10/IP/day and 50/day globally; set a monthly spend limit on the Anthropic workspace as the external hard cap. Model defaults to `claude-opus-5` (~1–3¢/receipt); set `PARSE_MODEL = "claude-haiku-4-5"` in `wrangler.toml` `[vars]` for the cheap toggle. Optionally set `TURNSTILE_SITE_KEY` (vars) + `TURNSTILE_SECRET` (secret) to add a bot check to scanning.
+Cost control: parse requests are capped at 10/IP/day and 50/day globally; set a monthly spend limit on the Anthropic workspace as the external hard cap. Model defaults to `claude-opus-5` (~1–3¢/receipt); set `PARSE_MODEL = "claude-haiku-4-5"` in `wrangler.toml` `[vars]` for the cheap toggle. Turnstile is half-built: the Worker verifies a `turnstileToken` whenever `TURNSTILE_SECRET` is set, but the create page renders no widget and sends no token yet — **do not set `TURNSTILE_SECRET` until that client half exists**, or every scan will fail with 403.

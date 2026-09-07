@@ -2,3 +2,4 @@ SESSION_SECRET=dev-secret-for-local-tests-only
 ADMIN_EMAILS=admin@example.com
 STRIPE_WEBHOOK_SECRET=whsec_test_secret_for_local_tests
 ANTHROPIC_API_KEY=sk-ant-test-not-a-real-key   # any value: turns the scan gate on locally; scans themselves fail upstream
+DEV=1   # 10x the daily create caps so a day of test runs doesn't 429 — never set in production

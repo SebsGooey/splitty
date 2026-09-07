@@ -132,6 +132,21 @@ function dropPersonClaims(bill, personId) {
   }
 }
 
+// Take a person off a bill entirely: their entry, claims, paid mark, and the
+// "this is the creator" tag if it was them.
+function removePersonFromBill(bill, personId) {
+  bill.people = bill.people.filter((x) => x.id !== personId);
+  dropPersonClaims(bill, personId);
+  if (bill.paid) delete bill.paid[personId];
+  if (bill.creatorPersonId === personId) delete bill.creatorPersonId;
+}
+
+// Accepts a bare bill id or a bill link (…/b/<id>, with or without #edit=…).
+function billIdFrom(s) {
+  const m = String(s || "").trim().match(/(?:^|\/b\/)([A-Za-z0-9_-]{16,64})(?:[#?].*)?$/);
+  return m ? m[1] : null;
+}
+
 function publicBill(bill) {
   return {
     ...bill,
@@ -839,6 +854,40 @@ async function adminApi(request, env, path) {
       return json({ error: "Accounts store unavailable." }, 503);
     }
   }
+  // Deletion on request ("delete my account" / "delete my bill" / "take my
+  // name off that bill" emails). Admin-only; the privacy policy promises these
+  // are done within 30 days, and this is how.
+  if (path === "/api/admin/accounts/delete" && request.method === "POST") {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "Bad request" }, 400);
+    }
+    const email = String(body.email || "").trim().toLowerCase().slice(0, 120);
+    const sub = typeof body.sub === "string" ? body.sub.slice(0, 80) : "";
+    if (!email && !sub) return json({ error: "Give an email or account id." }, 400);
+    try {
+      const out = await accountsCall(env, "/delete", { email, sub });
+      return json(out, out.ok ? 200 : out.error === "No such account." ? 404 : 409);
+    } catch {
+      return json({ error: "Accounts store unavailable." }, 503);
+    }
+  }
+  const billAdmin = path.match(/^\/api\/admin\/bills\/(delete|remove-person)$/);
+  if (billAdmin && request.method === "POST") {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "Bad request" }, 400);
+    }
+    const billId = billIdFrom(body.bill);
+    if (!billId) return json({ error: "Give a bill link or id." }, 400);
+    const stub = env.BILL_ROOM.get(env.BILL_ROOM.idFromName(billId));
+    const res = await stub.fetch("https://do/" + billAdmin[1], { method: "POST", body: JSON.stringify({ personId: body.personId }) });
+    return json(await res.json(), res.status);
+  }
   return json({ error: "Not found" }, 404);
 }
 
@@ -869,8 +918,17 @@ const METER_LIMITS = {
 };
 
 export class Meter {
-  constructor(ctx) {
+  constructor(ctx, env) {
     this.ctx = ctx;
+    this.env = env;
+  }
+
+  // Local dev (DEV=1 in .dev.vars): the integration suite creates ~20 bills a
+  // run, so the create caps are 10× there. Parse caps stay put — scans cost money.
+  limitsFor(kind) {
+    const base = METER_LIMITS[kind];
+    if (base && kind === "create" && this.env?.DEV === "1") return { perIp: base.perIp * 10, global: base.global * 10 };
+    return base;
   }
 
   async fetch(request) {
@@ -881,7 +939,7 @@ export class Meter {
       return json({ ok: false, message: "Bad meter request" }, 400);
     }
     const { kind, keys } = body;
-    const limits = METER_LIMITS[kind];
+    const limits = this.limitsFor(kind);
     if (!limits || !Array.isArray(keys) || keys.length < 1 || keys.length > 2 || keys.some((k) => typeof k !== "string")) {
       return json({ ok: false, message: "Bad meter request" }, 400);
     }
@@ -1056,6 +1114,20 @@ export class Accounts {
       return json(this.applyStripeEvent(body.event, now));
     }
 
+    if (url.pathname === "/delete") {
+      // Erase an account record on request. Refused until any Stripe
+      // subscription on it is cancelled: otherwise the person keeps paying for
+      // a record that no longer exists.
+      let row = body.sub ? this.one("SELECT * FROM users WHERE sub = ?", body.sub) : null;
+      if (!row && body.email) row = this.one("SELECT * FROM users WHERE email = ? ORDER BY last_seen DESC LIMIT 1", body.email);
+      if (!row) return json({ ok: false, error: "No such account." });
+      if (row.stripe_subscription && !["canceled", "incomplete_expired"].includes(row.stripe_status)) {
+        return json({ ok: false, error: "This account has a Stripe subscription that isn't cancelled — cancel it in Stripe first." });
+      }
+      this.sql.exec("DELETE FROM users WHERE sub = ?", row.sub);
+      return json({ ok: true, deleted: this.publicRow(row, now) });
+    }
+
     if (url.pathname === "/users") {
       const rows = this.sql.exec("SELECT * FROM users ORDER BY last_seen DESC LIMIT 500").toArray();
       return json({ users: rows.map((r) => this.publicRow(r, now)), freeBillsPerMonth: FREE_BILLS_PER_MONTH });
@@ -1211,6 +1283,37 @@ export class BillRoom {
       return json({ bill: publicBill(bill) });
     }
 
+    // Operator tooling (only the admin API calls these): wipe the bill now
+    // rather than at the 90-day alarm, or take one person off it.
+    if (url.pathname === "/delete" && request.method === "POST") {
+      const bill = await this.loadBill();
+      if (!bill) return json({ ok: true, existed: false });
+      for (const ws of this.ctx.getWebSockets()) {
+        try {
+          ws.close(1000, "expired");
+        } catch {}
+      }
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      return json({ ok: true, existed: true });
+    }
+    if (url.pathname === "/remove-person" && request.method === "POST") {
+      const bill = await this.loadBill();
+      if (!bill) return json({ error: "Bill not found" }, 404);
+      let personId;
+      try {
+        ({ personId } = await request.json());
+      } catch {
+        return json({ error: "Bad request" }, 400);
+      }
+      const person = bill.people.find((x) => x.id === personId);
+      if (!person) return json({ error: "That person isn't on the bill." }, 404);
+      removePersonFromBill(bill, person.id);
+      await this.saveBill(bill);
+      this.broadcast(bill);
+      return json({ ok: true, removed: person.name });
+    }
+
     if (url.pathname === "/ws") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("Expected WebSocket", { status: 426 });
       const bill = await this.loadBill();
@@ -1335,10 +1438,7 @@ export class BillRoom {
         const p = bill.people.find((x) => x.id === msg.personId);
         if (!p) break; // already gone — idempotent
         if (!canActFor(p.id)) return send({ type: "error", message: "Not allowed." });
-        bill.people = bill.people.filter((x) => x.id !== p.id);
-        dropPersonClaims(bill, p.id);
-        if (bill.paid) delete bill.paid[p.id];
-        if (bill.creatorPersonId === p.id) delete bill.creatorPersonId;
+        removePersonFromBill(bill, p.id);
         changed = true;
         break;
       }

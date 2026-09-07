@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Splitty · privacy policy</title>
+<meta name="description" content="What Splitty stores about you and your bills, why, who else sees it, how long it lives, and how to get it removed.">
+<link rel="canonical" href="https://splitty.cc/privacy.html">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect x=%2710%27 y=%274%27 width=%2744%27 height=%2756%27 rx=%274%27 fill=%27%23fffdf7%27/%3E%3Cpath d=%27M18 20h28M18 30h28M18 40h18%27 stroke=%27%231a1a1a%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2746%27 cy=%2744%27 r=%278%27 fill=%27%23e0523a%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main class="receipt">
+  <header>
+    <h1><a href="/">SPLITTY</a></h1>
+    <div class="sub">privacy policy</div>
+  </header>
+  <hr class="rule">
+
+  <section class="legal">
+<p class="meta">Effective September 6, 2026</p>
+
+<h2>1. Who we are</h2>
+<p>Splitty (<a href="/">splitty.cc</a>) is made and run by <b>Indranet Technologies</b>. We decide how and why personal data is used on Splitty, which makes us the "controller" in privacy-law terms. Contact us at <a href="mailto:hello@splitty.cc">hello@splitty.cc</a>; we'll give you a postal address for formal correspondence on request.</p>
+<p>This policy covers the Splitty website, bill pages, accounts and the Pro subscription. It's organized around what you actually do with Splitty. Google, Anthropic, Stripe, Cloudflare, Venmo, Cash App and PayPal have their own policies, linked in section 9. Our <a href="/terms.html">terms</a> cover the rest of the relationship.</p>
+
+<h2>2. The short version</h2>
+<ul>
+<li>A bill is a private link. <b>Everyone with the link sees everything on it</b>: names, items, who owes what, who's paid, and the creator's Venmo / Cash App / PayPal handles.</li>
+<li>Bills delete themselves 90 days after the last change. There's no delete button yet; email us the link and we'll remove a bill, or one name on it, by hand within 30 days.</li>
+<li>Joining a bill needs no account. Creating one needs Google sign-in. We then keep your Google account id, your email (only if Google marks it verified), your name, and how many bills and scans you've made.</li>
+<li>Receipt photos go to Anthropic (the company behind Claude) to be read. Splitty never stores the photo.</li>
+<li>Pro is billed by Stripe. Your card details never touch Splitty.</li>
+<li>No ads, no analytics, no tracking pixels, no marketing email, and we don't sell personal information. Splitty sets one cookie, only when you sign in.</li>
+<li>When you create a bill or scan a receipt, we store a hash of your IP address (not the address itself) for a daily limit.</li>
+</ul>
+
+<h2>3. Bills</h2>
+<p><b>What a bill holds, and who sees it.</b> A bill contains: its name (usually the restaurant); items, quantities, prices, tax and tip; each person's name, color, claims and share; who has been marked paid, and when; the creator's payment handles, if added; which person is the creator, if they joined; whether it's locked; and when it was created and last changed. Anyone with the link can see all of it, on the page and as raw data, without signing in. Links can be forwarded and we can't tell who has one. Bill ids are 128-bit random, so links are very hard to guess, and bill pages are hidden from search engines and send no referrer. But "private" means unguessable, not locked down. Don't put anything on a bill you wouldn't want the whole table, and whoever they forward it to, to see.</p>
+<p><b>Joining.</b> You type a name (up to 40 characters) and the bill adds you. We don't check it's really you: anyone with the link can join under any name. Your browser gets a random token that proves you're you on this bill; we store only a hash of it (section 10). If you tap "just watching", nothing about you is stored.</p>
+<p><b>What the creator can do.</b> The person who made the bill can edit the name, items, tax and tip; add or clear payment handles; claim items and mark paid for anyone; and lock or unlock the bill. Locking stops new joins and claim changes by everyone else; a locked bill stays readable to anyone with the link, and people can still mark themselves paid. The bill's live connection also lets the creator rename anyone on the bill or remove them from it (which drops their claims and paid mark), and lets you rename or remove yourself; there's no button for this yet.</p>
+<p><b>How long it lives.</b> Ninety days after the last change (a join, a claim, an edit, a payment-handle change, a paid mark, a lock or unlock, a rename or removal, and so on), the bill and everyone on it is wiped from our storage and the link shows "This bill doesn't exist". Just opening the bill does not reset that clock; a bill people keep editing keeps living. We keep no history of earlier versions.</p>
+<p><b>Getting rid of it sooner.</b> There's no delete button yet. The creator can clear payment handles, edit items away and lock the bill. To have a whole bill removed, or your name taken off one, email <a href="mailto:hello@splitty.cc">hello@splitty.cc</a> with the link and say which name is yours. We may ask you to prove it in a simple way, such as changing your paid mark while we watch. A person on our team does it within 30 days and confirms by email. We'll remove a whole bill at the creator's request, where it shows someone's personal information without their OK, or where the law requires it. Bills aren't tied to accounts, so we can't find a bill without its link.</p>
+
+<h2>4. Signing in with Google</h2>
+<p>Creating bills and scanning receipts need a Google sign-in; joining never does. Sign-in exists to keep the free tier and the AI scanner from being abused.</p>
+<p><b>How it works.</b> The create page loads Google's sign-in button from accounts.google.com on every visit, whether or not you sign in; Google's code may set Google's own cookies, and what Google collects there is covered by <a href="https://policies.google.com/privacy">Google's privacy policy</a>. When you sign in, Google hands your browser a signed token and your browser posts it to splitty.cc. We check the signature against Google's public keys and keep exactly three things: your Google account id, your email (only if Google says it's verified) and your name. The rest of the token is discarded. We never ask for access to your Google account, contacts, calendar or files, and we never see your Google password.</p>
+<p>Splitty's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. In plain terms, we use your Google account id, email and name only to sign you in, count your free bills, decide whether you're Pro or an admin, and tie a Stripe subscription to you. We don't sell them or use them for advertising. Cloudflare stores them for us, Stripe receives them when you subscribe (section 6), and no person reads them except to run the service (section 7), handle a request you've made, investigate abuse, or as the law requires.</p>
+<p><b>The cookie.</b> Signing in sets one cookie, <code>splitty_session</code>. It holds your Google account id, email, name and an expiry time, signed so it can't be forged (signed, not encrypted). It's HttpOnly, Secure and SameSite=Lax, is sent only to splitty.cc, and lasts <b>30 days</b> from sign-in. It exists only to keep you signed in to a feature you asked for, so no consent banner is needed. <b>Signing out</b> deletes it from that browser. We don't keep a list of live sessions, so a copied cookie keeps working until its 30 days are up. If you think that's happened, email us. We can rotate the signing key, which signs everyone out. You can also remove Splitty under your Google account's third-party apps settings; that stops Google signing you in until you approve it again, but doesn't delete your Splitty record.</p>
+<p><b>Your account record.</b> The first time you use a signed-in feature we create a record. It holds: your Google account id, verified email (lowercased) and name; when the record was created and last used; bills created and receipts scanned this month and all-time; your Pro status, until when, and whether it came from Stripe or from us; and, if you've subscribed, your Stripe customer id, subscription id and subscription status. Whenever you use a signed-in feature (loading the create or admin page, creating a bill, scanning, opening billing) we refresh your email and name from your sign-in and update "last used". A blank value never overwrites an existing one. To correct your name or email, change them in your Google account and sign in again. The free tier is 3 bills per calendar month (UTC).</p>
+<p><b>Email.</b> We keep no mailing list and send no marketing. We may email the address on your account about a price change, a change to our terms or this policy that affects you, a security incident, or to answer you. If Google didn't give us a verified email, we can't email you, and notices on the site are your notice.</p>
+<p><b>Deleting your account.</b> Account records aren't deleted automatically. Email <a href="mailto:hello@splitty.cc">hello@splitty.cc</a> from the address on your account and we'll delete the record within 30 days and confirm by email. If you're on Pro, we cancel the subscription first (no refund for the current month unless the law requires one); cancel it yourself in the billing portal first if you'd rather keep Pro until it runs out. Deleting the record doesn't delete bills, because bills aren't linked to accounts, and doesn't erase Stripe's own payment records, which Stripe keeps as tax law requires. Sign out on every device first: a browser that is still signed in would quietly create a fresh, empty record the next time it opens the create page.</p>
+
+<h2>5. Scanning a receipt (Pro)</h2>
+<ol>
+<li>Your browser shrinks the photo (longest side 1568 pixels, JPEG) before anything is uploaded.</li>
+<li>Splitty checks you're signed in and on Pro, and that today's cap isn't used up.</li>
+<li>Splitty forwards the photo, with a fixed instruction, to <b>Anthropic's Claude API</b>. The request carries no name, email, account id or IP address: just the image.</li>
+<li>Claude returns a draft (restaurant, items, prices, tax, tip, and warnings about anything it couldn't read). The instruction asks it to leave out addresses, phone numbers, card digits and server names, but that's a request to the model, not a filter we apply. You check and fix the draft before anything is created.</li>
+</ol>
+<p><b>What we keep:</b> nothing from the photo or the draft; both exist only in memory while the scan runs. We count successful scans on your account, count every attempt against the daily caps (section 8), and if a scan fails we log the error message we got back, never the image. <b>What Anthropic gets:</b> the whole photo, unredacted, handled under <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a> and its API terms; we can't delete a photo from Anthropic's side after it's sent. A receipt can show the last digits of a card, a server's name or a table number. If that worries you, crop the photo first, or type the items in.</p>
+
+<h2>6. Paying for Pro</h2>
+<p>Pro is a US$2.99-a-month subscription billed by <b>Stripe</b>. Tapping Upgrade opens Stripe Checkout on Stripe's site; your card number, billing address and everything else you type there go to Stripe, never to Splitty. We send Stripe your Google account id (as a reference, so we know who paid) and, the first time, your verified email so Stripe can prefill it. From Stripe's signed messages we store your Stripe customer id, subscription id, status (active, past due, cancelled) and paid-until date.</p>
+<p>The email on the Stripe customer is used only to match a payment to an account when the other identifiers are missing, and isn't stored. We keep each Stripe message id, with its type and arrival time, so we never process a message twice. Ids older than 30 days are discarded when the next message arrives. Your Stripe customer id isn't sent to your browser or shown to admins. We use it only to reuse your Stripe record at checkout and to open the billing portal. "Manage subscription" opens Stripe's portal, where you can update your card, see invoices or cancel. <a href="https://stripe.com/privacy">Stripe's privacy policy</a> covers its side.</p>
+
+<h2>7. What admins can see and do</h2>
+<p>A small number of people at Indranet Technologies, identified by their Google email, have an admin page. It lists accounts (up to 500, most recently used first). For each, it shows: account id, email and name; created and last-used dates; tier, Pro source and end date, and subscription status; whether a Stripe customer exists (yes/no); and bill and scan counts. It shows no receipts, IP addresses or card details, and lists no bills: to handle a request under section 3, an admin pastes one bill link and sees what anyone with that link sees (the bill name, the names on it, item and people counts, and the last-change date). Admins can grant or revoke Pro we've given for free (Pro bought through Stripe can only be cancelled through Stripe), and handle the requests in this policy: delete an account record, delete a bill, or take one person off a bill. Deleting a record is refused until any Stripe subscription on it is cancelled, so nobody keeps paying for a record that no longer exists.</p>
+<p>An admin can grant Pro to an email address that hasn't signed in yet, for example a friend we've promised Pro to. That stores the address as a placeholder until that person signs in with a matching, Google-verified email, when it becomes their account. If you've received such a grant and would rather we didn't hold your address, email us and we'll remove it. We don't currently keep a log of which admin granted or revoked what.</p>
+
+<h2>8. Rate limits, IP addresses and logs</h2>
+<p>Creating bills and scanning receipts cost us money, so each is capped per day: per IP address, per account when signed in, and across everyone; the caps reset at midnight UTC. To count, we hash your IP address and, if signed in, your account id (SHA-256, truncated) and store today's counts against those hashes. The real address is never written to our storage, but anyone who already has it could recompute the hash, so we treat the hash as personal data under a pseudonym, not as anonymous. The counts live apart from your account record, are never linked to bills, and are discarded on the first bill or scan of a later day. The per-address count is shared by everyone behind the same public address (an office Wi-Fi, a mobile carrier), so you can occasionally hit a cap you didn't use up yourself.</p>
+<p><b>Hosting logs.</b> Cloudflare runs the servers. To deliver the site it sees your IP address and request details, including the page address (which for a bill page contains the bill id), under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>. Splitty's own code logs only the status and error text returned when Anthropic or Stripe fails (Stripe's text can include your Stripe customer id), never bill contents, photos, emails or names. We haven't enabled log storage, so those lines are visible to us only in real time. If we turn log storage on, add analytics, or add a bot check to scanning (which would send your IP address to Cloudflare to verify), we'll update this page first.</p>
+
+<h2>9. Who else handles your data</h2>
+<p>Splitty has no external database and sells nothing to anyone. Two companies process data on our behalf:</p>
+<table>
+<tr><th>Who</th><th>What they get</th><th>Why</th></tr>
+<tr><td><a href="https://www.cloudflare.com/privacypolicy/">Cloudflare</a></td><td>Everything: it hosts the site, runs our code, stores bills and accounts, and carries the live connection</td><td>Running Splitty</td></tr>
+<tr><td><a href="https://www.anthropic.com/legal/privacy">Anthropic</a></td><td>Receipt photos, with no identity attached</td><td>Reading receipts (Pro)</td></tr>
+</table>
+<p>Others handle your data as independent services under their own policies, because you deal with them directly:</p>
+<table>
+<tr><th>Who</th><th>What they get</th><th>Why</th></tr>
+<tr><td><a href="https://policies.google.com/privacy">Google</a></td><td>Your sign-in: the button runs Google's code in your browser; we only verify the token it issues</td><td>Sign-in</td></tr>
+<tr><td><a href="https://stripe.com/privacy">Stripe</a></td><td>Your Google account id and, once, your verified email, plus everything you enter on Stripe's pages</td><td>Pro billing</td></tr>
+<tr><td><a href="https://venmo.com/legal/us-privacy-policy/">Venmo</a>, <a href="https://cash.app/legal/us/en-us/privacy">Cash App</a>, <a href="https://www.paypal.com/us/legalhub/privacy-full">PayPal</a></td><td>A handle and an amount, only when someone taps a Pay button; the tap doesn't pass through Splitty</td><td>Settling up</td></tr>
+</table>
+<p><b>No selling, no ads.</b> We don't sell personal information, don't share it with anyone for advertising, and there is no advertising on Splitty. <b>Legal and business reasons.</b> We may disclose data if the law requires it, or to protect the rights or safety of Splitty and its users. If Splitty changes hands, your data would pass to the new operator under this policy and we'd post a notice on the site.</p>
+<p><b>Where data lives.</b> Splitty runs on Cloudflare's global network; bills and account records are stored wherever Cloudflare places them, which we don't pin to a country. Cloudflare, Anthropic, Google and Stripe are US companies. If you use Splitty from the EEA, the UK or Switzerland, your data is transferred to the United States under the safeguards in each provider's terms, such as standard contractual clauses; email us for details.</p>
+
+<h2>10. What's stored in your browser</h2>
+<table>
+<tr><th>Name</th><th>What</th><th>How long</th></tr>
+<tr><td><code>splitty_session</code> (cookie)</td><td>Signed sign-in ticket: Google id, email, name, expiry</td><td>30 days, or until you sign out</td></tr>
+<tr><td><code>splitty-creator-</code> plus a bill id</td><td>Your creator token for one bill</td><td>Until you clear site data</td></tr>
+<tr><td><code>splitty-me-</code> plus a bill id</td><td>Your person id and token on one bill</td><td>Until your name is taken off the bill, or you clear site data</td></tr>
+<tr><td><code>splitty-pay</code></td><td>Your last-used payment handles, to prefill the next bill</td><td>Until you clear site data</td></tr>
+<tr><td><code>splitty-moxies-v1</code></td><td>The demo page's pretend bill (never sent anywhere)</td><td>Until you tap reset or clear site data</td></tr>
+</table>
+<p>Only the cookie and the bill tokens reach us, and tokens are stored on our side as one-way hashes. The saved payment handles are sent to us again, and shown on the bill, whenever you create a bill with them prefilled. Signing out doesn't clear the local entries, and an expired bill doesn't clear its entries either. To wipe everything, clear site data for splitty.cc in your browser (save your backup edit link first if you created a bill). The "backup edit link" under creator tools carries your creator token after the <code>#</code>, a part of the address browsers never send to us; anyone you send it to gets full creator control. There are no analytics, advertising or tracking cookies, no tracking pixels, no third-party fonts and no content delivery networks. Splitty's pages load code only from splitty.cc. The one exception is the create page, which loads Google's sign-in button (section 4).</p>
+
+<h2>11. Pay buttons, sharing and copying</h2>
+<p>Pay buttons are plain links, built in your browser, to venmo.com, cash.app or paypal.me, with the creator's handle and that person's amount filled in; the Venmo link also carries a short note with the bill name. Nothing is sent to those services until someone taps one, and Splitty never learns whether anyone paid: "mark as paid" is a tap people make themselves. Check the amount before you send. "Share link" and "Copy summary" hand the bill link, or a text summary of who owes what and where to pay, to your phone's share sheet or clipboard; where you paste that is up to you, and we can't recall copies other people have made.</p>
+
+<h2>12. How long we keep things</h2>
+<table>
+<tr><th>Data</th><th>Kept</th></tr>
+<tr><td>A bill and everyone on it</td><td>90 days after the last change, then wiped; viewing doesn't count. Sooner on request (section 3)</td></tr>
+<tr><td>Receipt photos and scan drafts</td><td>Not kept by Splitty. Anthropic handles the photo under its own terms</td></tr>
+<tr><td>Account record (id, email, name, counters, Pro status, Stripe ids)</td><td>Until you ask us to delete it (section 4)</td></tr>
+<tr><td>Pro grant for an email that hasn't signed in yet</td><td>Until that person signs in, or asks us to remove it</td></tr>
+<tr><td>Stripe message ids</td><td>About 30 days; discarded when the next message arrives</td></tr>
+<tr><td>Hashed IP and account counts</td><td>The current UTC day; discarded on the first bill or scan of a later day</td></tr>
+<tr><td>Sign-in cookie</td><td>30 days, or until you sign out</td></tr>
+<tr><td>Error log lines</td><td>Not stored; visible in real time only</td></tr>
+<tr><td>Browser storage</td><td>Until you clear it</td></tr>
+<tr><td>Emails you send us</td><td>As long as needed to handle your request, then as the law requires</td></tr>
+</table>
+<p>Our host may keep short-lived backups of its storage that we can't edit; we don't restore expired or deleted data from them.</p>
+
+<h2>13. Why we use your data</h2>
+<p>For the privacy laws that ask for a legal basis:</p>
+<ul>
+<li><b>To run Splitty</b> (performance of our contract with you): storing and syncing bills live, keeping you signed in, counting free bills, delivering Pro. For people whose name is put on a bill by someone else, or who appear on a receipt, we rely on our legitimate interest in running the bill the creator asked for; a bill holds only a name, items and amounts, at an unguessable link, for 90 days.</li>
+<li><b>To read receipts</b> (contract, and your choice each time you upload a photo).</li>
+<li><b>To take payment</b> (contract, and our legal duty to keep billing records).</li>
+<li><b>To offer Google sign-in</b> (our legitimate interest in gating bill creation and scanning behind a real account): the create page loads Google's button for every visitor. If you'd rather not load Google's code, don't open the create page; bill pages don't load it.</li>
+<li><b>To send service notices</b> (contract, legitimate interests, and where the law requires them).</li>
+<li><b>To honor a Pro grant</b> we've promised someone (our legitimate interest, and theirs).</li>
+<li><b>To prevent abuse and keep the service secure</b> (our legitimate interests): daily caps on hashed addresses, verifying sign-in tokens and Stripe messages, rejecting cross-site form posts.</li>
+<li><b>To answer you</b> when you email us, and <b>to comply with the law</b>.</li>
+</ul>
+<p>We don't build profiles of you and make no automated decisions with legal or similarly significant effects on you.</p>
+
+<h2>14. Your choices and your rights</h2>
+<p><b>Things you can do yourself:</b> sign out on the create page; on a bill you created, edit items, clear payment handles, lock it, and stop forwarding the link; on a bill you joined, change your claims and your paid mark; change your name or email in your Google account and sign in again; cancel Pro with "manage subscription"; clear site data for splitty.cc.</p>
+<p><b>Things to email us for.</b> Wherever you live, you can ask us to <b>see</b> what we hold about you (we'll send a copy in plain text), <b>delete</b> your account record, a bill or your name on a bill, <b>correct</b> anything you can't change yourself, <b>object</b> to or restrict something we're doing, or <b>withdraw</b> consent (for the scanner, just stop uploading). Email <a href="mailto:hello@splitty.cc">hello@splitty.cc</a> from the Google address on your account for anything about the account; for a bill, send the link and say which name is yours. We'll acknowledge within 10 business days and answer within a month; if it's complicated we may take up to 45 more days and will say why. Deletion requests (an account record, a bill, or a name on a bill) are always done within 30 days, as sections 3 and 4 say. If we refuse all or part of a request we'll explain, and you can appeal by replying with "appeal" in the subject line. Requests are free unless clearly excessive, we won't treat you differently for making one, and you may use an authorized agent (someone acting for you).</p>
+<p><b>If you're in the EEA, the UK or Switzerland</b>, these are your rights of access, rectification, erasure, restriction, portability and objection under the GDPR and UK GDPR. You can also complain to the data-protection authority where you live or work (in the UK, the ICO), though we'd rather hear from you first.</p>
+<p><b>If you're in California or a US state with a similar law</b>, in the last 12 months we've collected these categories:</p>
+<ul>
+<li>identifiers: Google account id, email, name, and, if you subscribe, Stripe customer and subscription ids;</li>
+<li>commercial information: Pro and subscription status, bills and scans counted;</li>
+<li>internet activity: your IP address, browser type and the pages you request, seen by Cloudflare to deliver the site, and a hashed IP address we keep for the current day;</li>
+<li>content you put on bills: names, items, payment handles;</li>
+<li>the receipt photo, only while a scan runs.</li>
+</ul>
+<p>We get this from you, from Google when you sign in, and from Stripe when you subscribe; we keep it as section 12 says; and we use it for the purposes in section 13 and disclose it only to the providers in section 9. We don't collect sensitive personal information as those laws define it, and we have never sold or shared personal information, including that of consumers under 16, so there is no opt-out to offer and nothing for a Global Privacy Control signal to switch off.</p>
+
+<h2>15. Security</h2>
+<ul>
+<li>Splitty is served over HTTPS, and the live bill connection uses a secure WebSocket when the page is loaded over HTTPS.</li>
+<li>Bill ids and tokens are 128-bit random values; tokens are stored only as SHA-256 hashes, so a copy of our storage wouldn't reveal them.</li>
+<li>The session cookie is signed with a server secret and can't be read by page scripts.</li>
+<li>Google sign-in tokens are verified against Google's published keys; Stripe messages are signature-checked and applied once.</li>
+<li>Card details are entered only on Stripe's pages.</li>
+<li>Bill pages are hidden from search engines, send no referrer, and can't be framed by other sites. A content security policy restricts what pages can load, and cross-site form posts to our API are rejected.</li>
+<li>Each live connection is throttled, and bill creation and scanning are capped per day.</li>
+<li>Secrets live in Cloudflare's secret store, not in code.</li>
+</ul>
+<p>Anyone with a bill link can read the bill, so treat links like the bills themselves, and keep the devices you've signed in on secure. No system is perfect. If we learn of a breach affecting your data we'll tell you, and the authorities where required, as soon as we reasonably can.</p>
+
+<h2>16. Children</h2>
+<p>Splitty isn't directed at children under 13, and you must be at least 13 to use it (older where your local law sets a higher age); you must be 18 or older, or the age of majority where you live, to buy Pro. We don't verify ages. If we learn that a child under 13 has created an account, we'll delete the record. If a child's name has been put on a bill, a parent or guardian can email us the bill link and we'll take the name off.</p>
+
+<h2>17. Changes to this policy</h2>
+<p>This page describes Splitty as it is today. If we add something that changes what we collect (analytics, a bot check, a new provider, an archive of your past bills), we'll update this page first: the date at the top changes and we'll add a note on the home page. If a change matters (we start collecting something new, add a provider, or change how long we keep things), we'll also email the address on your account at least 30 days before it takes effect. The current version always lives at <a href="/privacy.html">splitty.cc/privacy.html</a>.</p>
+
+<h2>18. Contact</h2>
+<p>Indranet Technologies · <a href="mailto:hello@splitty.cc">hello@splitty.cc</a> · <a href="/">splitty.cc</a> · <a href="/terms.html">Terms of Service</a></p>
+  </section>
+
+  <div class="barcode"></div>
+  <p class="footer-note"><a href="/">home</a> · <a href="/terms.html">terms</a> · <a href="/privacy.html">privacy</a></p>
+</main>
+</body>
+</html>

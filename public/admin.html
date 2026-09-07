@@ -53,6 +53,14 @@
     <hr class="rule">
     <p class="section-label">Accounts <span id="count"></span></p>
     <div id="users"></div>
+    <hr class="rule">
+    <p class="section-label">Bills · deletion requests</p>
+    <form class="grant" id="billForm" autocomplete="off">
+      <input type="text" id="billLink" placeholder="paste the bill link" maxlength="200" required>
+      <button class="btn small" type="submit">Look up</button>
+    </form>
+    <div id="billPanel" class="hidden"></div>
+    <p class="hint" style="text-align:left">For "delete my bill" / "take my name off it" emails. Deleting wipes the bill for everyone with the link, right away. Removing a person drops their name, claims and paid mark; the bill page updates live.</p>
   </div>
 
   <div class="barcode"></div>
@@ -125,6 +133,22 @@ async function refresh() {
       mk("Pro forever", { forever: true });
       if (u.tier === "pro") mk("Revoke", { revoke: true }, true);
     }
+    // "Delete my account" requests. The server refuses while a Stripe subscription is live.
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "btn small ghost"; del.textContent = "Delete record";
+    del.onclick = async () => {
+      if (!confirm(`Delete the account record for ${u.email || u.sub}? Bills aren't linked to accounts and are not affected.`)) return;
+      try {
+        const r = await fetch("/api/admin/accounts/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sub: u.sub }) });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok || !out.ok) throw new Error(out.error || "That didn't work.");
+        showError("Deleted.", true);
+        refresh();
+      } catch (err) {
+        showError(err.message || "Couldn't reach the server.");
+      }
+    };
+    acts.appendChild(del);
     card.appendChild(acts);
     el.appendChild(card);
   }
@@ -145,6 +169,55 @@ $("grantForm").addEventListener("submit", (e) => {
   const len = $("grantLength").value;
   grant(len === "forever" ? { email, forever: true } : { email, months: Number(len) });
   $("grantEmail").value = "";
+});
+
+// ---- bills: look up by link, remove a person, or delete the whole bill ----
+async function adminBill(action, body) {
+  const r = await fetch("/api/admin/bills/" + action, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const out = await r.json().catch(() => ({}));
+  if (!r.ok || !out.ok) throw new Error(out.error || "That didn't work.");
+  return out;
+}
+$("billForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const m = $("billLink").value.trim().match(/(?:^|\/b\/)([A-Za-z0-9_-]{16,64})/);
+  if (!m) return showError("That doesn't look like a bill link.");
+  const id = m[1];
+  const panel = $("billPanel");
+  let b;
+  try {
+    const r = await fetch("/api/bills/" + id);
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(out.error || "Bill not found.");
+    b = out.bill;
+  } catch (err) {
+    panel.classList.add("hidden");
+    return showError(err.message || "Couldn't reach the server.");
+  }
+  panel.classList.remove("hidden");
+  panel.innerHTML = `<div class="u"><div class="top"><span class="email">${esc(b.restaurant)}</span>` +
+    `<span class="hint" style="margin:0 0 0 auto">${b.items.length} items · ${b.people.length} people · last change ${when(b.lastActivity)}</span></div>` +
+    '<div class="acts" id="billPeople"></div><div class="acts" id="billActs"></div></div>';
+  const people = panel.querySelector("#billPeople");
+  if (!b.people.length) people.innerHTML = '<span class="hint" style="margin:0">nobody has joined</span>';
+  for (const person of b.people) {
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "btn small ghost"; btn.textContent = "remove " + person.name;
+    btn.onclick = async () => {
+      if (!confirm(`Remove ${person.name} from this bill (their claims and paid mark go too)?`)) return;
+      try { await adminBill("remove-person", { bill: id, personId: person.id }); showError("Removed.", true); $("billForm").requestSubmit(); }
+      catch (err) { showError(err.message); }
+    };
+    people.appendChild(btn);
+  }
+  const del = document.createElement("button");
+  del.type = "button"; del.className = "btn small"; del.textContent = "Delete this bill";
+  del.onclick = async () => {
+    if (!confirm("Delete the whole bill for everyone with the link, right now?")) return;
+    try { await adminBill("delete", { bill: id }); showError("Bill deleted.", true); panel.classList.add("hidden"); $("billLink").value = ""; }
+    catch (err) { showError(err.message); }
+  };
+  panel.querySelector("#billActs").appendChild(del);
 });
 
 load().catch(() => showError("Couldn't reach the server."));
