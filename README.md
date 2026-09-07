@@ -2,7 +2,7 @@
 
 Snap a receipt, share a link, split the bill — live on every phone at the table.
 
-**Live:** https://splitty.<your-subdomain>.workers.dev *(original Moxies demo: [/moxies.html](public/moxies.html))*
+**Live:** https://splitty.cc *(original Moxies demo: [/moxies.html](public/moxies.html))*
 
 ## How it works
 
@@ -36,7 +36,7 @@ Pro comes from a Stripe subscription, an admin grant, or being listed in `ADMIN_
 2. **Stripe** (optional until you want to charge):
    - Create a product with a recurring price — $2.99 / month — and copy its `price_…` id → `STRIPE_PRICE_ID` (variable).
    - Developers → API keys → secret key → `STRIPE_SECRET_KEY` (secret).
-   - Developers → Webhooks → add endpoint `https://<your-worker>/api/stripe/webhook` with events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` → signing secret → `STRIPE_WEBHOOK_SECRET` (secret).
+   - Developers → Webhooks → add endpoint `https://splitty.cc/api/stripe/webhook` with events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` → signing secret → `STRIPE_WEBHOOK_SECRET` (secret).
    - Optional: `PRO_PRICE_LABEL` if the price isn't $2.99 / month.
    - Enable the Customer Portal in Stripe (Settings → Billing → Customer portal) so "manage subscription" works.
 
@@ -75,7 +75,7 @@ The tests mint a session cookie with the same HMAC scheme the Worker uses (`SESS
 
 ## Deploy
 
-Pushes to `main` deploy automatically — the Worker is connected to this repo through Cloudflare Workers Builds (Settings → Builds; deploy command `npx wrangler deploy`). Other branches get preview builds. Manual deploy still works:
+Pushes to `main` deploy automatically — the Worker is connected to this repo through Cloudflare Workers Builds (Settings → Builds; deploy command `npx wrangler deploy`). Other branches get preview builds. The Worker serves `splitty.cc` and `www.splitty.cc` as custom domains (Workers & Pages → splitty → Domains); `CANONICAL_HOST` in `wrangler.toml` makes page loads on `www.` or the `*.workers.dev` URL redirect to `https://splitty.cc`. Google sign-in needs every origin listed under the OAuth client's Authorized JavaScript origins. Manual deploy still works:
 
 ```bash
 npx wrangler login

@@ -372,11 +372,25 @@ function crossOrigin(request, url) {
   return Boolean(origin && origin !== url.origin);
 }
 
+// One canonical host. Page loads on the workers.dev URL or www. redirect to
+// CANONICAL_HOST; API and WebSocket calls are left alone so a tab that was
+// opened on the old host keeps working until it reloads.
+function canonicalRedirect(request, env, url) {
+  const host = env.CANONICAL_HOST;
+  if (!host || request.method !== "GET" || url.pathname.startsWith("/api/")) return null;
+  if (url.hostname !== host && (url.hostname.endsWith(".workers.dev") || url.hostname === "www." + host)) {
+    return Response.redirect(`https://${host}${url.pathname}${url.search}`, 301);
+  }
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
     try {
+      const moved = canonicalRedirect(request, env, url);
+      if (moved) return moved;
       if (request.method === "POST" && path.startsWith("/api/") && crossOrigin(request, url)) {
         return json({ error: "Cross-origin requests are not allowed." }, 403);
       }
