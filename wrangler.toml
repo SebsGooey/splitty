@@ -6,6 +6,10 @@ compatibility_date = "2026-08-01"
 directory = "public"
 binding = "ASSETS"
 
+# Dashboard-set variables survive deploys (ADMIN_EMAILS, STRIPE_PRICE_ID, PRO_PRICE_LABEL
+# can live there instead of in this public file). Secrets always survive.
+keep_vars = true
+
 # Plain-text config (secrets are set with `wrangler secret put`, never here).
 # GOOGLE_CLIENT_ID is public by design; with the SESSION_SECRET secret present
 # it gates bill creation + receipt scanning behind Google sign-in.
@@ -13,6 +17,14 @@ binding = "ASSETS"
 GOOGLE_CLIENT_ID = "572976983973-uuue8q3u19inauo1q1n9osvjfrgk5miq.apps.googleusercontent.com"
 # PARSE_MODEL = "claude-opus-5"        # or "claude-haiku-4-5" for the cheap toggle
 # TURNSTILE_SITE_KEY = "..."           # enables the Turnstile widget when set
+#
+# Tiers / billing — set these in the dashboard (Settings → Variables and Secrets):
+#   ADMIN_EMAILS          comma-separated Google emails that get Pro + the /admin page
+#   PRO_PRICE_LABEL       shown on the upgrade button, default "$2.99 / month"
+#   STRIPE_PRICE_ID       price_… for the Pro subscription
+#   STRIPE_SECRET_KEY     (secret) sk_live_… / sk_test_…
+#   STRIPE_WEBHOOK_SECRET (secret) whsec_… for the /api/stripe/webhook endpoint
+# The upgrade button stays "coming soon" until all three STRIPE_* values exist.
 
 [[durable_objects.bindings]]
 name = "BILL_ROOM"
@@ -22,6 +34,14 @@ class_name = "BillRoom"
 name = "METER"
 class_name = "Meter"
 
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "Accounts"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["BillRoom", "Meter"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Accounts"]

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Splitty · admin</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect x=%2710%27 y=%274%27 width=%2744%27 height=%2756%27 rx=%274%27 fill=%27%23fffdf7%27/%3E%3Cpath d=%27M18 20h28M18 30h28M18 40h18%27 stroke=%27%231a1a1a%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2746%27 cy=%2744%27 r=%278%27 fill=%27%23e0523a%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+<style>
+  .u { border: 1.5px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: #fff; display: grid; gap: 6px; }
+  .u.pro { border-color: var(--accent); }
+  .u .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .u .email { font-weight: 700; font-size: .9rem; word-break: break-all; }
+  .u .meta { font-size: .72rem; color: var(--ink-soft); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .u .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .u .acts button { font-size: .7rem; padding: 4px 10px; }
+  .stats { display: flex; gap: 12px; justify-content: space-between; font-size: .8rem; color: var(--ink-soft); flex-wrap: wrap; }
+  .stats b { color: var(--ink); }
+  .grant { display: flex; gap: 6px; flex-wrap: wrap; }
+  .grant input[type=text] { flex: 1; min-width: 180px; }
+  .grant select { width: 120px; }
+</style>
+</head>
+<body>
+<main class="receipt">
+  <header>
+    <h1><a href="/">SPLITTY</a></h1>
+    <div class="sub">admin · accounts &amp; tiers</div>
+  </header>
+  <hr class="rule">
+  <div class="error-box" id="errorBox"></div>
+
+  <div id="gate">
+    <p class="hint">Checking who you are…</p>
+  </div>
+
+  <div id="panel" class="hidden">
+    <div class="stats" id="stats"></div>
+    <hr class="rule">
+    <p class="section-label">Grant Pro by email</p>
+    <form class="grant" id="grantForm" autocomplete="off">
+      <input type="text" id="grantEmail" placeholder="friend@gmail.com" maxlength="120" required>
+      <select id="grantLength">
+        <option value="1">1 month</option>
+        <option value="3">3 months</option>
+        <option value="12" selected>12 months</option>
+        <option value="forever">forever</option>
+      </select>
+      <button class="btn small" type="submit">Grant</button>
+    </form>
+    <p class="hint" style="text-align:left">Works before they've ever signed in — the grant attaches to that Google email on their first sign-in. People in <code>ADMIN_EMAILS</code> are Pro automatically and aren't listed until they sign in.</p>
+    <hr class="rule">
+    <p class="section-label">Accounts <span id="count"></span></p>
+    <div id="users"></div>
+  </div>
+
+  <div class="barcode"></div>
+  <p class="footer-note">only the emails in ADMIN_EMAILS can see this</p>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const when = (ms) => ms ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
+const ago = (ms) => { const d = Math.round((Date.now() - ms) / 86400e3); return d <= 0 ? "today" : d === 1 ? "yesterday" : d + "d ago"; };
+
+function showError(msg, ok) {
+  const box = $("errorBox");
+  box.textContent = msg;
+  box.classList.toggle("ok", Boolean(ok));
+  box.classList.add("show");
+  setTimeout(() => box.classList.remove("show", "ok"), 6000);
+}
+
+async function load() {
+  const me = await fetch("/api/me").then((r) => r.json()).catch(() => null);
+  if (!me?.user) return ($("gate").innerHTML = '<p class="hint">Sign in on the <a href="/">home page</a> first.</p>');
+  if (!me.account?.isAdmin) return ($("gate").innerHTML = `<p class="hint">Signed in as ${esc(me.user.email || me.user.name)} — not an admin. Add that email to <code>ADMIN_EMAILS</code> in Cloudflare to use this page.</p>`);
+  $("gate").classList.add("hidden");
+  $("panel").classList.remove("hidden");
+  await refresh();
+}
+
+let users = [];
+async function refresh() {
+  const r = await fetch("/api/admin/users");
+  const out = await r.json();
+  if (!r.ok) return showError(out.error || "Couldn't load accounts.");
+  users = out.users;
+  const pro = users.filter((u) => u.tier === "pro").length;
+  const stripe = users.filter((u) => u.proSource === "stripe" && u.tier === "pro").length;
+  const monthBills = users.reduce((a, u) => a + u.billsMonth, 0);
+  const monthScans = users.reduce((a, u) => a + u.scansMonth, 0);
+  $("stats").innerHTML = `<span><b>${users.length}</b> accounts</span><span><b>${pro}</b> Pro (${stripe} paying)</span><span><b>${monthBills}</b> bills this month</span><span><b>${monthScans}</b> scans this month</span>`;
+  $("count").textContent = users.length ? `· ${users.length}` : "";
+  const el = $("users");
+  el.innerHTML = users.length ? "" : '<p class="hint">No one has signed in yet.</p>';
+  for (const u of users) {
+    const card = document.createElement("div");
+    card.className = "u" + (u.tier === "pro" ? " pro" : "");
+    const proNote = u.tier === "pro"
+      ? (u.proForever ? "forever" : u.proUntil ? (u.proSource === "stripe" ? "renews " : "until ") + when(u.proUntil) : "")
+      : (u.stripeStatus === "canceled" ? "cancelled" : "");
+    card.innerHTML =
+      `<div class="top"><span class="tier-pill${u.tier === "pro" ? " pro" : ""}">${u.tier.toUpperCase()}</span>` +
+      `<span class="email">${esc(u.email || u.sub)}</span>${u.pending ? '<span class="hint" style="margin:0">(not signed in yet)</span>' : ""}` +
+      `<span class="hint" style="margin:0 0 0 auto">${u.name ? esc(u.name) : ""}</span></div>` +
+      `<div class="meta"><span>${u.proSource ? esc(u.proSource) + (proNote ? " · " + proNote : "") : "free"}</span>` +
+      `<span>bills ${u.billsMonth} this month · ${u.billsTotal} total</span><span>scans ${u.scansMonth} · ${u.scansTotal}</span>` +
+      `<span>seen ${u.pending ? "never" : ago(u.lastSeen)}</span></div>`;
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    const mk = (label, body, ghost) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn small" + (ghost ? " ghost" : ""); b.textContent = label;
+      b.onclick = () => grant({ sub: u.sub, email: u.email, ...body });
+      acts.appendChild(b);
+    };
+    if (u.proSource === "stripe" && u.tier === "pro") {
+      acts.innerHTML = '<span class="hint" style="margin:0">Paying via Stripe — manage there.</span>';
+    } else {
+      mk("Pro 12 mo", { months: 12 });
+      mk("Pro forever", { forever: true });
+      if (u.tier === "pro") mk("Revoke", { revoke: true }, true);
+    }
+    card.appendChild(acts);
+    el.appendChild(card);
+  }
+}
+
+async function grant(body) {
+  const r = await fetch("/api/admin/grant", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const out = await r.json();
+  if (!r.ok || !out.ok) return showError(out.error || "That didn't work.");
+  showError(body.revoke ? "Revoked." : "Granted.", true);
+  refresh();
+}
+
+$("grantForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const email = $("grantEmail").value.trim();
+  if (!email) return;
+  const len = $("grantLength").value;
+  grant(len === "forever" ? { email, forever: true } : { email, months: Number(len) });
+  $("grantEmail").value = "";
+});
+
+load().catch(() => showError("Couldn't reach the server."));
+</script>
+</body>
+</html>

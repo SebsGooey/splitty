@@ -23,7 +23,9 @@ const WS_BASE = BASE.replace(/^http/, "ws");
 // ---------- helpers ----------
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
-function mintSession({ sub = "test-user", email = "test@example.com", name = "Test User", exp = Date.now() + 3600_000 } = {}) {
+// The default test identity is an admin (Pro, unlimited) so the many
+// bill-creating tests never trip the free tier's monthly quota.
+function mintSession({ sub = "test-user", email = "admin@example.com", name = "Test User", exp = Date.now() + 3600_000 } = {}) {
   const body = b64url(JSON.stringify({ sub, email, name, exp }));
   const sig = createHmac("sha256", SECRET).update(body).digest();
   return `splitty_session=${body}.${b64url(sig)}`;
@@ -562,9 +564,149 @@ test("settle up: the creator joining is recorded as the payee, and cleared if re
   c.close(); p.close();
 });
 
-test("parse: disabled locally returns 501 and never meters", async () => {
-  const r = await api("/api/parse", { method: "POST", body: { media_type: "image/jpeg", data: "x".repeat(200) }, cookie: mintSession() });
-  assert.equal(r.status, 501);
+test("parse: free accounts are told it's Pro-only; Pro accounts get through the gate", async () => {
+  const body = { media_type: "image/jpeg", data: "x".repeat(200) };
+  const free = await api("/api/parse", { method: "POST", body, cookie: mintSession({ sub: "parse-free", email: "parse-free@example.com" }) });
+  assert.equal(free.status, 402);
+  assert.equal(free.data.upgrade, true);
+  assert.equal(free.data.account.canScan, false);
+  assert.equal(free.data.account.stripeCustomer, undefined, "stripe customer id never reaches the browser");
+  // Admin email = Pro. The scan itself then fails upstream (fake key) — that's fine here.
+  const pro = await api("/api/parse", { method: "POST", body, cookie: mintSession({ sub: "parse-admin", email: "admin@example.com" }) });
+  assert.notEqual(pro.status, 402);
+  assert.notEqual(pro.status, 401);
+});
+
+// ---------- accounts, tiers, admin, Stripe ----------
+
+test("tiers: a new sign-in is free with 3 bills a month, the 4th is refused with an upgrade hint", async () => {
+  const sub = "free-" + Date.now();
+  const cookie = mintSession({ sub, email: sub + "@example.com", name: "Free Fran" });
+  const me0 = await api("/api/me", { cookie });
+  assert.equal(me0.data.account.tier, "free");
+  assert.equal(me0.data.account.billsLeft, 3);
+  assert.equal(me0.data.account.canScan, false);
+  assert.equal(me0.data.account.isAdmin, false);
+  assert.equal(me0.data.billing.enabled, false, "Stripe isn't configured locally");
+  for (let i = 0; i < 3; i++) await createBill({}, cookie);
+  const me3 = await api("/api/me", { cookie });
+  assert.equal(me3.data.account.billsUsed, 3);
+  assert.equal(me3.data.account.billsLeft, 0);
+  const fourth = await api("/api/bills", { method: "POST", body: SAMPLE, cookie });
+  assert.equal(fourth.status, 402);
+  assert.equal(fourth.data.upgrade, true);
+  assert.match(fourth.data.error, /3 free bills/);
+  // Checkout isn't switched on yet.
+  const co = await api("/api/billing/checkout", { method: "POST", body: {}, cookie });
+  assert.equal(co.status, 501);
+});
+
+test("tiers: admin emails are Pro, unlimited, and can grant or revoke Pro for others", async () => {
+  const admin = mintSession({ sub: "admin-1", email: "admin@example.com", name: "Admin" });
+  const me = await api("/api/me", { cookie: admin });
+  assert.equal(me.data.account.tier, "pro");
+  assert.equal(me.data.account.isAdmin, true);
+  assert.equal(me.data.account.proSource, "admin-email");
+  assert.equal(me.data.account.billsLimit, null);
+  for (let i = 0; i < 4; i++) await createBill({}, admin);
+
+  // A normal user can't touch the admin API.
+  const pleb = mintSession({ sub: "pleb-1", email: "pleb@example.com" });
+  assert.equal((await api("/api/admin/users", { cookie: pleb })).status, 403);
+  assert.equal((await api("/api/admin/users")).status, 401);
+
+  // Grant Pro to someone who has never signed in, by email; it's adopted on first sign-in.
+  const newbieEmail = "newbie-" + Date.now() + "@example.com";
+  const g = await api("/api/admin/grant", { method: "POST", body: { email: newbieEmail, months: 1 }, cookie: admin });
+  assert.equal(g.status, 200);
+  assert.equal(g.data.user.pending, true);
+  const newbie = mintSession({ sub: "newbie-" + Date.now(), email: newbieEmail, name: "Newbie" });
+  const nm = await api("/api/me", { cookie: newbie });
+  assert.equal(nm.data.account.tier, "pro");
+  assert.equal(nm.data.account.proSource, "admin");
+  assert.ok(nm.data.account.proUntil > Date.now() + 25 * 86400e3);
+  const list = await api("/api/admin/users", { cookie: admin });
+  const row = list.data.users.find((u) => u.email === newbieEmail);
+  assert.ok(row && !row.pending && row.tier === "pro", "the pending grant merged into the real account");
+
+  // Revoke → free again; forever grant → no end date.
+  await api("/api/admin/grant", { method: "POST", body: { email: newbieEmail, revoke: true }, cookie: admin });
+  assert.equal((await api("/api/me", { cookie: newbie })).data.account.tier, "free");
+  await api("/api/admin/grant", { method: "POST", body: { email: newbieEmail, forever: true }, cookie: admin });
+  const fm = await api("/api/me", { cookie: newbie });
+  assert.equal(fm.data.account.tier, "pro");
+  assert.equal(fm.data.account.proUntil, null);
+});
+
+const STRIPE_TEST_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "whsec_test_secret_for_local_tests";
+function stripeSigned(event, { secret = STRIPE_TEST_SECRET, t = Math.floor(Date.now() / 1000) } = {}) {
+  const raw = JSON.stringify(event);
+  const sig = createHmac("sha256", secret).update(`${t}.${raw}`).digest("hex");
+  return { raw, header: `t=${t},v1=${sig}` };
+}
+async function postWebhook(event, opts) {
+  const { raw, header } = stripeSigned(event, opts);
+  const res = await fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: raw });
+  return { status: res.status, data: await res.json().catch(() => null) };
+}
+
+test("stripe: webhook verifies signatures and drives Pro through the subscription lifecycle", async () => {
+  const sub = "buyer-" + Date.now();
+  const cookie = mintSession({ sub, email: sub + "@example.com", name: "Buyer" });
+  await api("/api/me", { cookie }); // creates the account row
+  const evt = (id, type, object) => ({ id, type, data: { object } });
+
+  // Bad signature / stale timestamp / wrong secret → 400, nothing applied.
+  const badSig = await fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": "t=1,v1=deadbeef" }, body: "{}" });
+  assert.equal(badSig.status, 400);
+  const stale = await postWebhook(evt("evt_stale", "checkout.session.completed", { client_reference_id: sub }), { t: Math.floor(Date.now() / 1000) - 3600 });
+  assert.equal(stale.status, 400);
+  const wrong = await postWebhook(evt("evt_wrong", "checkout.session.completed", { client_reference_id: sub }), { secret: "whsec_other" });
+  assert.equal(wrong.status, 400);
+  assert.equal((await api("/api/me", { cookie })).data.account.tier, "free");
+
+  // Checkout completed → provisional Pro (stripe).
+  const ck = await postWebhook(evt("evt_ck_" + sub, "checkout.session.completed", {
+    mode: "subscription", client_reference_id: sub, customer: "cus_test123", subscription: "sub_test123", customer_details: { email: sub + "@example.com" },
+  }));
+  assert.equal(ck.status, 200);
+  assert.equal(ck.data.applied, true);
+  let me = await api("/api/me", { cookie });
+  assert.equal(me.data.account.tier, "pro");
+  assert.equal(me.data.account.proSource, "stripe");
+  assert.equal(me.data.account.hasStripeCustomer, true);
+  assert.equal(me.data.account.stripeCustomer, undefined);
+
+  // Duplicate delivery is a no-op.
+  const dup = await postWebhook(evt("evt_ck_" + sub, "checkout.session.completed", { client_reference_id: sub }));
+  assert.equal(dup.data.applied, false);
+
+  // Subscription updated with a real period end (newer API shape: on items).
+  const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
+  const up = await postWebhook(evt("evt_up_" + sub, "customer.subscription.updated", {
+    id: "sub_test123", customer: "cus_test123", status: "active", metadata: { sub }, items: { data: [{ current_period_end: periodEnd }] },
+  }));
+  assert.equal(up.data.applied, true);
+  me = await api("/api/me", { cookie });
+  assert.equal(me.data.account.proUntil, periodEnd * 1000);
+  assert.equal(me.data.account.stripeStatus, "active");
+
+  // Portal needs a customer — Stripe itself isn't configured locally, so 501.
+  assert.equal((await api("/api/billing/portal", { method: "POST", body: {}, cookie })).status, 501);
+
+  // Subscription deleted → back to free immediately.
+  const del = await postWebhook(evt("evt_del_" + sub, "customer.subscription.deleted", { id: "sub_test123", customer: "cus_test123", status: "canceled" }));
+  assert.equal(del.data.applied, true);
+  me = await api("/api/me", { cookie });
+  assert.equal(me.data.account.tier, "free");
+  assert.equal(me.data.account.stripeStatus, "canceled");
+
+  // Unrelated event types are acknowledged but ignored; unknown customers don't crash.
+  const ign = await postWebhook(evt("evt_ign_" + sub, "invoice.paid", { customer: "cus_test123" }));
+  assert.equal(ign.status, 200);
+  assert.equal(ign.data.applied, false);
+  const nobody = await postWebhook(evt("evt_nobody_" + sub, "customer.subscription.updated", { id: "sub_x", customer: "cus_nobody", status: "active" }));
+  assert.equal(nobody.data.applied, false);
 });
 
 // Opt-in (`node test/integration.mjs --meter`): it burns the local per-IP daily

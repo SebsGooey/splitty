@@ -55,6 +55,7 @@ h1 a { color: inherit; text-decoration: none; }
   font-size: .8rem; font-weight: 700; display: none;
 }
 .error-box.show { display: block; }
+.error-box.ok { border-color: var(--ok); color: var(--ok); }
 
 /* Buttons + inputs */
 button { font: inherit; cursor: pointer; }
@@ -80,6 +81,18 @@ input[type="text"], input[type="number"], select {
   width: 100%; min-width: 0;
 }
 input:focus, select:focus { outline: 2px solid var(--ink); border-color: var(--ink); }
+
+/* Account bar (create page) */
+.account { display: grid; gap: 6px; margin-bottom: 12px; }
+.acct-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+#tierRow, #upgradeRow { justify-content: flex-start; }
+.tier-pill {
+  font-size: .62rem; font-weight: 800; letter-spacing: .12em; padding: 3px 8px; border-radius: 999px;
+  border: 1.5px solid var(--ink-soft); color: var(--ink-soft);
+}
+.tier-pill.pro { border-color: var(--accent); color: var(--accent); }
+.btn.locked { background: var(--ink-soft); }
+.btn.locked::after { content: "  ·  Pro"; font-weight: 400; opacity: .85; }
 
 /* Item editor rows */
 .item-row { display: flex; gap: 6px; margin-bottom: 7px; align-items: center; }

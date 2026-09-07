@@ -25,9 +25,23 @@
     <p class="hint">One-time sign-in keeps the AI scanner spam-free.<br><b>Friends with a bill link never need an account.</b></p>
     <hr class="rule">
   </div>
-  <div id="whoBar" class="hidden" style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:10px">
-    <span class="hint" style="margin:0" id="whoText"></span>
-    <button class="btn small ghost" id="signOutBtn" type="button" style="font-size:.7rem;padding:4px 10px">sign out</button>
+  <div id="whoBar" class="hidden account">
+    <div class="acct-row">
+      <span class="hint" style="margin:0" id="whoText"></span>
+      <button class="btn small ghost" id="signOutBtn" type="button" style="font-size:.7rem;padding:4px 10px">sign out</button>
+      <a class="linklike hidden" id="adminLink" href="/admin.html" style="margin:0">admin</a>
+    </div>
+    <div class="acct-row" id="tierRow">
+      <span class="tier-pill" id="tierPill">FREE</span>
+      <span class="hint" style="margin:0;text-align:left;flex:1" id="tierText"></span>
+    </div>
+    <div class="acct-row hidden" id="upgradeRow">
+      <button class="btn small accent" id="upgradeBtn" type="button">Upgrade</button>
+      <span class="hint" style="margin:0;text-align:left;flex:1" id="upgradeHint">Unlimited bills + receipt scanning.</span>
+    </div>
+    <div class="acct-row hidden" id="manageRow">
+      <button class="btn small ghost" id="manageBtn" type="button" style="font-size:.7rem;padding:4px 10px">manage subscription</button>
+    </div>
   </div>
 
   <p class="section-label">Scan a receipt</p>
@@ -75,7 +89,7 @@
 
   <a class="linklike" href="/moxies.html" style="text-align:center">see the original Moxies demo</a>
   <div class="barcode"></div>
-  <p class="footer-note">no accounts · no app · bills self-delete after 90 days</p>
+  <p class="footer-note">friends need no account · no app · bills self-delete after 90 days</p>
 </main>
 
 <script>
@@ -92,18 +106,61 @@ const tipPct = (v) => Math.round(Math.min(Math.max(parseFloat(v) || 0, 0), 100) 
 let parseEnabled = true;
 let needAuth = false;
 let user = null;
+let account = null; // tier + usage from /api/me (null when signed out or auth is off)
+let billing = { enabled: false, priceLabel: "$2.99 / month", freeBillsPerMonth: 3 };
+
+const CREATE_LABEL = "Create bill & get share link";
+const SCAN_LABEL = "📷 &nbsp;Snap / upload receipt photo";
+const fmtDate = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+const outOfFreeBills = () => Boolean(account && account.billsLimit !== null && account.billsLeft === 0);
+const canScan = () => !account || account.canScan;
 
 function refreshGates() {
   const locked = needAuth && !user;
   $("authCard").classList.toggle("hidden", !locked);
   $("whoBar").classList.toggle("hidden", !(needAuth && user));
   if (needAuth && user) $("whoText").textContent = "signed in as " + (user.email || user.name || "you");
+
+  // Tier line
+  if (account) {
+    const pill = $("tierPill");
+    pill.textContent = account.isPro ? "PRO" : "FREE";
+    pill.classList.toggle("pro", account.isPro);
+    let text;
+    if (account.isPro) {
+      text = "Unlimited bills and receipt scanning";
+      if (account.proSource === "admin-email") text += " · admin";
+      else if (account.proUntil) text += (account.proSource === "stripe" ? " · renews " : " · until ") + fmtDate(account.proUntil);
+      if (account.stripeStatus === "past_due") text = "Payment failed — update your card to keep Pro";
+    } else {
+      text = `${account.billsLeft} of ${account.billsLimit} free bills left this month · scanning is Pro`;
+    }
+    $("tierText").textContent = text;
+    $("upgradeRow").classList.toggle("hidden", account.isPro);
+    $("upgradeBtn").textContent = billing.enabled ? `Upgrade · ${billing.priceLabel}` : "Pro — coming soon";
+    $("upgradeBtn").disabled = !billing.enabled;
+    $("manageRow").classList.toggle("hidden", !(account.hasStripeCustomer && billing.enabled));
+    $("adminLink").classList.toggle("hidden", !account.isAdmin);
+  } else {
+    $("tierRow").classList.add("hidden");
+    $("upgradeRow").classList.add("hidden");
+    $("manageRow").classList.add("hidden");
+  }
+  if (account) $("tierRow").classList.remove("hidden");
+
+  // Create button: free accounts that are out of bills get routed to upgrade.
   $("createBtn").disabled = locked;
+  $("createBtn").textContent = outOfFreeBills() ? "Free bills used up — upgrade for unlimited" : CREATE_LABEL;
+
+  // Scan button
   $("scanBtn").disabled = locked || !parseEnabled;
+  $("scanBtn").classList.toggle("locked", !locked && parseEnabled && !canScan());
   if (!parseEnabled) {
     $("scanHint").textContent = "Receipt scanning isn't switched on yet — enter items below.";
   } else if (locked) {
     $("scanHint").textContent = "Sign in above to scan receipts and create bills.";
+  } else if (!canScan()) {
+    $("scanHint").textContent = "Receipt scanning is a Pro feature — upgrade to snap instead of type.";
   } else {
     $("scanHint").textContent = "AI reads the items — you review and fix before anything is created.";
   }
@@ -114,7 +171,65 @@ function refreshGates() {
 function sessionLost() {
   if (!needAuth) return;
   user = null;
+  account = null;
   refreshGates();
+}
+
+async function refreshMe() {
+  const me = await fetch("/api/me").then((r) => r.json());
+  user = me.user;
+  account = me.account || null;
+  if (me.billing) billing = me.billing;
+  refreshGates();
+  return me;
+}
+
+// ---- upgrade / manage ----
+async function startUpgrade() {
+  if (!billing.enabled) return showError("Pro isn't open for sign-ups yet — check back soon.");
+  $("upgradeBtn").disabled = true;
+  try {
+    const r = await fetch("/api/billing/checkout", { method: "POST" });
+    const out = await r.json();
+    if (r.status === 401) { sessionLost(); throw new Error("Sign in first."); }
+    if (!r.ok) throw new Error(out.error || "Couldn't start the upgrade.");
+    location.href = out.url;
+  } catch (e) {
+    showError(e.message);
+    $("upgradeBtn").disabled = false;
+  }
+}
+$("upgradeBtn").onclick = startUpgrade;
+$("manageBtn").onclick = async () => {
+  try {
+    const r = await fetch("/api/billing/portal", { method: "POST" });
+    const out = await r.json();
+    if (!r.ok) throw new Error(out.error || "Couldn't open billing.");
+    location.href = out.url;
+  } catch (e) {
+    showError(e.message);
+  }
+};
+
+// Back from Stripe: the webhook usually lands within a second or two — poll
+// until the account shows Pro, then say so.
+async function afterCheckoutReturn() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has("upgraded") && !q.has("upgrade")) return;
+  history.replaceState(null, "", location.pathname);
+  if (q.get("upgrade") === "cancelled") return showError("No worries — you're still on Free.");
+  for (let i = 0; i < 12; i++) {
+    if (account?.isPro) return showToast("You're on Pro — thanks! Unlimited bills and scanning are on.");
+    await new Promise((r) => setTimeout(r, 1500));
+    try { await refreshMe(); } catch {}
+  }
+  showError("Payment received — Pro should switch on within a minute. Reload if it hasn't.");
+}
+function showToast(msg) {
+  const box = $("errorBox");
+  box.textContent = msg;
+  box.classList.add("show", "ok");
+  setTimeout(() => box.classList.remove("show", "ok"), 8000);
 }
 
 let gisReady = false;
@@ -143,6 +258,7 @@ function initGoogleButton(clientId) {
           if (!r.ok) throw new Error(out.error || "Sign-in failed");
           user = out.user;
           refreshGates();
+          refreshMe().catch(() => {});
         } catch (e) {
           showError(e.message || "Sign-in failed — try again.");
         }
@@ -164,12 +280,15 @@ Promise.all([
 ]).then(([c, meRes]) => {
   parseEnabled = c.parseEnabled;
   needAuth = Boolean(c.authRequired);
+  if (c.billing) billing = c.billing;
   user = meRes.user;
+  account = meRes.account || null;
   if (c.authMisconfigured) showError("Server sign-in config is incomplete — bill creation is paused until it's fixed.");
   // Init the button whenever auth is on, even while signed in, so signing out
   // (or an expired session) immediately has a working sign-in button.
   if (needAuth && c.googleClientId) initGoogleButton(c.googleClientId);
   refreshGates();
+  afterCheckoutReturn();
 }).catch(() => {
   showError("Couldn't reach the server — reload to try again.");
 });
@@ -234,7 +353,10 @@ try {
 } catch {}
 
 // ---- receipt scan ----
-$("scanBtn").onclick = () => $("photoInput").click();
+$("scanBtn").onclick = () => {
+  if (!canScan()) return startUpgrade();
+  $("photoInput").click();
+};
 $("photoInput").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -249,12 +371,13 @@ $("photoInput").addEventListener("change", async (e) => {
     });
     const out = await res.json();
     if (res.status === 401) sessionLost();
+    if (res.status === 402 && out.account) { account = out.account; refreshGates(); }
     if (!res.ok) throw new Error(out.error || "Scan failed");
     applyDraft(out.draft);
   } catch (err) {
     showError(err.message || "Scan failed — enter items manually.");
   } finally {
-    $("scanBtn").innerHTML = "📷 &nbsp;Snap / upload receipt photo";
+    $("scanBtn").innerHTML = SCAN_LABEL;
     refreshGates();
     e.target.value = "";
   }
@@ -298,6 +421,7 @@ function applyDraft(draft) {
 
 // ---- create ----
 $("createBtn").onclick = async () => {
+  if (outOfFreeBills()) return startUpgrade();
   const items = readItems();
   if (!items.length) return showError("Add at least one item (or scan a receipt).");
   if (items.some((i) => i.priceCents === 0)) {
@@ -333,6 +457,7 @@ $("createBtn").onclick = async () => {
     });
     const out = await res.json();
     if (res.status === 401) sessionLost();
+    if (res.status === 402 && out.account) { account = out.account; refreshGates(); }
     if (!res.ok) throw new Error(out.error || "Could not create the bill.");
     // Private-mode browsers can throw on setItem — the bill exists either way,
     // so always navigate; the #edit= fragment re-delivers the creator token.
@@ -342,7 +467,7 @@ $("createBtn").onclick = async () => {
   } catch (err) {
     showError(err.message);
     $("createBtn").disabled = false;
-    $("createBtn").textContent = "Create bill & get share link";
+    refreshGates();
   }
 };
 </script>

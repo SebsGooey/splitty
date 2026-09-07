@@ -309,6 +309,58 @@ async function handleGoogleAuth(request, env) {
   );
 }
 
+// ---------- accounts, tiers, admin ----------
+// Joining a bill via its link never needs an account. Creating bills and
+// scanning receipts do (Google sign-in), and those sit behind tiers:
+//   free  — FREE_BILLS_PER_MONTH manual bills a month, no receipt scanning
+//   pro   — unlimited bills (still under the abuse caps) + scanning
+// Pro comes from a Stripe subscription, an admin grant, or being listed in
+// ADMIN_EMAILS. Everything lives in the singleton Accounts Durable Object.
+const FREE_BILLS_PER_MONTH = 3;
+const FOREVER = 32503680000000; // 2999-12-31 — "no end date" for admin grants
+const PRO_GRACE_MS = 3 * DAY_MS; // slack past a period end while Stripe retries a card
+
+function adminEmails(env) {
+  return new Set(String(env.ADMIN_EMAILS || "").toLowerCase().split(/[,\s]+/).filter(Boolean));
+}
+const isAdminSession = (session, env) => Boolean(session?.email) && adminEmails(env).has(session.email.toLowerCase());
+
+const accountsStub = (env) => env.ACCOUNTS.get(env.ACCOUNTS.idFromName("global"));
+
+async function accountsCall(env, path, body) {
+  const res = await accountsStub(env).fetch("https://do" + path, { method: "POST", body: JSON.stringify(body || {}) });
+  if (!res.ok) throw new Error("accounts " + path + " " + res.status);
+  return res.json();
+}
+
+// What a signed-in person may do right now. If the Accounts DO is unreachable
+// we degrade to "free, or pro if admin" and say so, rather than failing.
+async function entitlementFor(session, env) {
+  const isAdmin = isAdminSession(session, env);
+  try {
+    return await accountsCall(env, "/touch", { sub: session.sub, email: session.email, name: session.name, isAdmin });
+  } catch {
+    return {
+      tier: isAdmin ? "pro" : "free", isPro: isAdmin, proUntil: null, proSource: isAdmin ? "admin-email" : null,
+      billsUsed: 0, billsLimit: isAdmin ? null : FREE_BILLS_PER_MONTH, billsLeft: isAdmin ? null : FREE_BILLS_PER_MONTH,
+      canScan: isAdmin, hasStripeCustomer: false, isAdmin, degraded: true,
+    };
+  }
+}
+
+function stripeEnabled(env) {
+  return Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_PRICE_ID && env.STRIPE_WEBHOOK_SECRET);
+}
+function billingInfo(env) {
+  return { enabled: stripeEnabled(env), priceLabel: env.PRO_PRICE_LABEL || "$2.99 / month", freeBillsPerMonth: FREE_BILLS_PER_MONTH };
+}
+// The Stripe customer id stays server-side; everything else is the person's own.
+function publicAccount(account) {
+  if (!account) return null;
+  const { stripeCustomer, ...rest } = account;
+  return rest;
+}
+
 // ---------- Worker (router) ----------
 
 // Browsers always send Origin on cross-site POSTs; a mismatched Origin means a
@@ -335,6 +387,7 @@ export default {
           authRequired: authRequired(env),
           authMisconfigured: authState(env) === "misconfigured",
           googleClientId: env.GOOGLE_CLIENT_ID || null,
+          billing: billingInfo(env),
         });
       }
 
@@ -344,8 +397,15 @@ export default {
       }
       if (path === "/api/me" && request.method === "GET") {
         const s = await getSession(request, env);
-        return json({ user: s ? { email: s.email, name: s.name } : null, authRequired: authRequired(env) });
+        const account = s && authRequired(env) ? await entitlementFor(s, env) : null;
+        return json({ user: s ? { email: s.email, name: s.name } : null, authRequired: authRequired(env), account: publicAccount(account), billing: billingInfo(env) });
       }
+
+      if (path === "/api/billing/checkout" && request.method === "POST") return billingCheckout(request, env, url);
+      if (path === "/api/billing/portal" && request.method === "POST") return billingPortal(request, env, url);
+      if (path === "/api/stripe/webhook" && request.method === "POST") return stripeWebhook(request, env);
+
+      if (path.startsWith("/api/admin/")) return adminApi(request, env, path);
 
       if (path === "/api/bills" && request.method === "POST") return createBill(request, env);
 
@@ -415,6 +475,18 @@ async function createBill(request, env) {
 
   const meter = await meterCheck(env, request, "create", session);
   if (!meter.ok) return json({ error: meter.message }, 429);
+
+  // Tiers: free accounts get FREE_BILLS_PER_MONTH; Pro/admin are unlimited.
+  // Counted after the abuse meter so junk can't burn someone's monthly quota.
+  if (session && authRequired(env)) {
+    let quota;
+    try {
+      quota = await accountsCall(env, "/consume", { sub: session.sub, email: session.email, name: session.name, kind: "bill", isAdmin: isAdminSession(session, env) });
+    } catch {
+      quota = { ok: true }; // accounts store unreachable — a free bill is cheap, don't block the table
+    }
+    if (!quota.ok) return json({ error: quota.message, upgrade: true, account: publicAccount(quota.entitlement) }, 402);
+  }
 
   const billId = randomToken();
   const creatorToken = randomToken();
@@ -491,6 +563,15 @@ async function parseReceipt(request, env) {
   const session = await getSession(request, env);
   if (authRequired(env) && !session) {
     return json({ error: "Sign in with Google to scan receipts." }, 401);
+  }
+  // Scanning spends real money, so it is Pro-only (fail closed if the accounts
+  // store is unreachable — the manual path still works).
+  let account = null;
+  if (session && authRequired(env)) {
+    account = await entitlementFor(session, env);
+    if (!account.canScan) {
+      return json({ error: "Receipt scanning is a Pro feature — upgrade, or type the items in (it's quick).", upgrade: true, account: publicAccount(account) }, 402);
+    }
   }
   // Require a sane, explicit Content-Length: absent (chunked) or non-numeric
   // values must not slip past the size guard as 0/NaN.
@@ -590,7 +671,161 @@ async function parseReceipt(request, env) {
   if (Number.isInteger(draft.subtotalCents) && Math.abs(itemSum - draft.subtotalCents) > 1) {
     draft.warnings = [...(draft.warnings || []), `Item prices sum to ${(itemSum / 100).toFixed(2)} but the printed subtotal reads ${(draft.subtotalCents / 100).toFixed(2)} — double-check the items.`];
   }
+  if (session && authRequired(env)) {
+    // Usage bookkeeping only (Pro scans are unlimited); never fail the scan over it.
+    try { await accountsCall(env, "/consume", { sub: session.sub, email: session.email, name: session.name, kind: "scan", isAdmin: isAdminSession(session, env) }); } catch {}
+  }
   return json({ draft });
+}
+
+// ---------- Stripe billing ----------
+// Checkout → webhook → Accounts DO. All three secrets must be present for the
+// upgrade button to do anything; until then it says "coming soon".
+
+async function stripeApi(env, path, form) {
+  const res = await fetch("https://api.stripe.com" + path, {
+    method: "POST",
+    headers: { authorization: "Bearer " + env.STRIPE_SECRET_KEY, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form).toString(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error("stripe error", res.status, data?.error?.message);
+    throw new Error(data?.error?.message || "stripe " + res.status);
+  }
+  return data;
+}
+
+async function billingCheckout(request, env, url) {
+  if (!stripeEnabled(env)) return json({ error: "Upgrades aren't switched on yet." }, 501);
+  const session = await getSession(request, env);
+  if (!session) return json({ error: "Sign in first." }, 401);
+  const account = await entitlementFor(session, env);
+  if (account.isPro && account.proSource !== "stripe") {
+    return json({ error: "You already have Pro." }, 409);
+  }
+  const form = {
+    mode: "subscription",
+    "line_items[0][price]": env.STRIPE_PRICE_ID,
+    "line_items[0][quantity]": "1",
+    success_url: url.origin + "/?upgraded=1",
+    cancel_url: url.origin + "/?upgrade=cancelled",
+    client_reference_id: session.sub,
+    "metadata[sub]": session.sub,
+    "subscription_data[metadata][sub]": session.sub,
+    allow_promotion_codes: "true",
+  };
+  if (account.stripeCustomer) form.customer = account.stripeCustomer;
+  else if (session.email) form.customer_email = session.email;
+  try {
+    const checkout = await stripeApi(env, "/v1/checkout/sessions", form);
+    return json({ url: checkout.url });
+  } catch {
+    return json({ error: "Couldn't start checkout — try again in a minute." }, 502);
+  }
+}
+
+async function billingPortal(request, env, url) {
+  if (!stripeEnabled(env)) return json({ error: "Billing isn't switched on yet." }, 501);
+  const session = await getSession(request, env);
+  if (!session) return json({ error: "Sign in first." }, 401);
+  const account = await entitlementFor(session, env);
+  if (!account.stripeCustomer) return json({ error: "No subscription to manage on this account." }, 404);
+  try {
+    const portal = await stripeApi(env, "/v1/billing_portal/sessions", { customer: account.stripeCustomer, return_url: url.origin + "/" });
+    return json({ url: portal.url });
+  } catch {
+    return json({ error: "Couldn't open the billing portal — try again in a minute." }, 502);
+  }
+}
+
+// Stripe-Signature: t=<unix>,v1=<hex>[,v1=<hex>]; signed payload is "<t>.<raw body>".
+async function verifyStripeSignature(header, rawBody, secret, toleranceSec = 300) {
+  if (!header) return false;
+  const parts = Object.create(null);
+  const sigs = [];
+  for (const kv of header.split(",")) {
+    const [k, v] = kv.split("=", 2).map((s) => s && s.trim());
+    if (k === "t") parts.t = v;
+    else if (k === "v1" && v) sigs.push(v.toLowerCase());
+  }
+  const t = Number(parts.t);
+  if (!Number.isFinite(t) || !sigs.length) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - t) > toleranceSec) return false;
+  const key = await hmacKey(secret, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${parts.t}.${rawBody}`)));
+  const expected = [...mac].map((b) => b.toString(16).padStart(2, "0")).join("");
+  // Constant-time compare against each provided v1.
+  return sigs.some((s) => {
+    if (s.length !== expected.length) return false;
+    let diff = 0;
+    for (let i = 0; i < s.length; i++) diff |= s.charCodeAt(i) ^ expected.charCodeAt(i);
+    return diff === 0;
+  });
+}
+
+async function stripeWebhook(request, env) {
+  if (!env.STRIPE_WEBHOOK_SECRET) return json({ error: "Webhooks aren't configured." }, 501);
+  const raw = await request.text();
+  if (raw.length > 1_000_000) return json({ error: "Payload too large" }, 413);
+  if (!(await verifyStripeSignature(request.headers.get("stripe-signature"), raw, env.STRIPE_WEBHOOK_SECRET))) {
+    return json({ error: "Bad signature" }, 400);
+  }
+  let event;
+  try {
+    event = JSON.parse(raw);
+  } catch {
+    return json({ error: "Bad payload" }, 400);
+  }
+  if (!event || typeof event.id !== "string" || typeof event.type !== "string") return json({ error: "Bad event" }, 400);
+  try {
+    const result = await accountsCall(env, "/stripe", { event });
+    return json({ received: true, ...result });
+  } catch {
+    // 5xx makes Stripe retry, which is what we want if the store hiccups.
+    return json({ error: "Store unavailable" }, 503);
+  }
+}
+
+// ---------- admin API ----------
+
+async function adminApi(request, env, path) {
+  const session = await getSession(request, env);
+  if (!session) return json({ error: "Sign in first." }, 401);
+  if (!isAdminSession(session, env)) return json({ error: "Admins only." }, 403);
+  if (path === "/api/admin/users" && request.method === "GET") {
+    try {
+      const res = await accountsStub(env).fetch("https://do/users");
+      return json(await res.json());
+    } catch {
+      return json({ error: "Accounts store unavailable." }, 503);
+    }
+  }
+  if (path === "/api/admin/grant" && request.method === "POST") {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "Bad request" }, 400);
+    }
+    const email = String(body.email || "").trim().toLowerCase().slice(0, 120);
+    const sub = typeof body.sub === "string" ? body.sub.slice(0, 80) : "";
+    if (!email && !sub) return json({ error: "Give an email or account id." }, 400);
+    let until;
+    if (body.revoke) until = 0;
+    else if (body.forever) until = FOREVER;
+    else {
+      const months = Number.isInteger(body.months) ? Math.min(Math.max(body.months, 1), 120) : 12;
+      until = Date.now() + months * 30 * DAY_MS;
+    }
+    try {
+      const out = await accountsCall(env, "/grant", { email, sub, until, by: session.email });
+      return json(out, out.ok ? 200 : 404);
+    } catch {
+      return json({ error: "Accounts store unavailable." }, 503);
+    }
+  }
+  return json({ error: "Not found" }, 404);
 }
 
 async function verifyTurnstile(env, token, request) {
@@ -659,6 +894,232 @@ export class Meter {
     }
     await this.ctx.storage.put("counters", s);
     return json({ ok: true });
+  }
+}
+
+// ---------- Accounts DO (singleton): users, tiers, usage, Stripe state ----------
+
+const monthKey = (ms) => new Date(ms).toISOString().slice(0, 7); // "2026-09" (UTC)
+
+export class Accounts {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.sql = ctx.storage.sql;
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        sub TEXT PRIMARY KEY,
+        email TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL,
+        pro_until INTEGER,
+        pro_source TEXT,
+        stripe_customer TEXT,
+        stripe_subscription TEXT,
+        stripe_status TEXT,
+        month_key TEXT NOT NULL DEFAULT '',
+        bills_month INTEGER NOT NULL DEFAULT 0,
+        scans_month INTEGER NOT NULL DEFAULT 0,
+        bills_total INTEGER NOT NULL DEFAULT 0,
+        scans_total INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS users_customer ON users(stripe_customer);
+      CREATE TABLE IF NOT EXISTS stripe_events (id TEXT PRIMARY KEY, type TEXT NOT NULL, created_at INTEGER NOT NULL);
+    `);
+  }
+
+  one(query, ...params) {
+    return this.sql.exec(query, ...params).toArray()[0] || null;
+  }
+
+  // Find or create the row for a signed-in person. A Pro grant made by email
+  // before they ever signed in lives under sub "email:<address>" and is
+  // adopted on first sign-in.
+  touch(sub, email, name, now) {
+    email = String(email || "").toLowerCase().slice(0, 120);
+    name = String(name || "").slice(0, 80);
+    let row = this.one("SELECT * FROM users WHERE sub = ?", sub);
+    if (!row && email) {
+      const pending = this.one("SELECT * FROM users WHERE sub = ?", "email:" + email);
+      if (pending) {
+        this.sql.exec("UPDATE users SET sub = ? WHERE sub = ?", sub, "email:" + email);
+        row = this.one("SELECT * FROM users WHERE sub = ?", sub);
+      }
+    }
+    if (!row) {
+      this.sql.exec("INSERT INTO users (sub, email, name, created_at, last_seen, month_key) VALUES (?, ?, ?, ?, ?, ?)", sub, email, name, now, now, monthKey(now));
+      row = this.one("SELECT * FROM users WHERE sub = ?", sub);
+    } else {
+      // Month rollover resets the free counters.
+      const mk = monthKey(now);
+      if (row.month_key !== mk) this.sql.exec("UPDATE users SET month_key = ?, bills_month = 0, scans_month = 0 WHERE sub = ?", mk, sub);
+      this.sql.exec("UPDATE users SET last_seen = ?, email = CASE WHEN ? != '' THEN ? ELSE email END, name = CASE WHEN ? != '' THEN ? ELSE name END WHERE sub = ?", now, email, email, name, name, sub);
+      row = this.one("SELECT * FROM users WHERE sub = ?", sub);
+    }
+    return row;
+  }
+
+  entitlement(row, isAdmin, now) {
+    // Grace past the period end only while Stripe still considers the
+    // subscription alive (card retries); a cancellation ends Pro at once.
+    const grace = ["active", "trialing", "past_due"].includes(row.stripe_status) ? PRO_GRACE_MS : 0;
+    const stripeActive = row.pro_source === "stripe" && row.pro_until && row.pro_until + grace > now;
+    const granted = row.pro_source === "admin" && row.pro_until && row.pro_until > now;
+    const isPro = Boolean(isAdmin || stripeActive || granted);
+    const source = isAdmin ? "admin-email" : stripeActive ? "stripe" : granted ? "admin" : null;
+    return {
+      tier: isPro ? "pro" : "free",
+      isPro,
+      proUntil: isPro && !isAdmin && row.pro_until && row.pro_until < FOREVER ? row.pro_until : null,
+      proSource: source,
+      stripeStatus: row.stripe_status || null,
+      billsUsed: row.bills_month,
+      billsLimit: isPro ? null : FREE_BILLS_PER_MONTH,
+      billsLeft: isPro ? null : Math.max(0, FREE_BILLS_PER_MONTH - row.bills_month),
+      canScan: isPro,
+      hasStripeCustomer: Boolean(row.stripe_customer),
+      stripeCustomer: row.stripe_customer || null, // stripped before it reaches a browser
+      isAdmin: Boolean(isAdmin),
+    };
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const now = Date.now();
+    let body = {};
+    if (request.method === "POST") {
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Bad request" }, 400);
+      }
+    }
+
+    if (url.pathname === "/touch") {
+      if (typeof body.sub !== "string" || !body.sub) return json({ error: "sub required" }, 400);
+      const row = this.touch(body.sub, body.email, body.name, now);
+      return json(this.entitlement(row, body.isAdmin, now));
+    }
+
+    if (url.pathname === "/consume") {
+      if (typeof body.sub !== "string" || !body.sub) return json({ error: "sub required" }, 400);
+      const row = this.touch(body.sub, body.email, body.name, now);
+      const ent = this.entitlement(row, body.isAdmin, now);
+      if (body.kind === "bill") {
+        if (!ent.isPro && row.bills_month >= FREE_BILLS_PER_MONTH) {
+          return json({ ok: false, code: "quota", message: `That's your ${FREE_BILLS_PER_MONTH} free bills for this month. Pro is unlimited — or wait for the 1st.`, entitlement: ent });
+        }
+        this.sql.exec("UPDATE users SET bills_month = bills_month + 1, bills_total = bills_total + 1 WHERE sub = ?", body.sub);
+      } else if (body.kind === "scan") {
+        if (!ent.canScan) return json({ ok: false, code: "pro", message: "Receipt scanning is a Pro feature.", entitlement: ent });
+        this.sql.exec("UPDATE users SET scans_month = scans_month + 1, scans_total = scans_total + 1 WHERE sub = ?", body.sub);
+      } else {
+        return json({ error: "bad kind" }, 400);
+      }
+      return json({ ok: true, entitlement: this.entitlement(this.one("SELECT * FROM users WHERE sub = ?", body.sub), body.isAdmin, now) });
+    }
+
+    if (url.pathname === "/grant") {
+      // Admin grant/revoke by sub or email. Email grants for people who have
+      // not signed in yet are parked under sub "email:<address>".
+      let row = body.sub ? this.one("SELECT * FROM users WHERE sub = ?", body.sub) : null;
+      if (!row && body.email) row = this.one("SELECT * FROM users WHERE email = ? ORDER BY last_seen DESC LIMIT 1", body.email);
+      if (!row && body.email) {
+        const sub = "email:" + body.email;
+        this.sql.exec("INSERT OR IGNORE INTO users (sub, email, created_at, last_seen, month_key) VALUES (?, ?, ?, ?, ?)", sub, body.email, now, now, monthKey(now));
+        row = this.one("SELECT * FROM users WHERE sub = ?", sub);
+      }
+      if (!row) return json({ ok: false, error: "No such account." });
+      const until = Number(body.until) || 0;
+      if (until > now) this.sql.exec("UPDATE users SET pro_until = ?, pro_source = 'admin' WHERE sub = ?", until, row.sub);
+      else if (row.pro_source === "admin" || !row.pro_source) this.sql.exec("UPDATE users SET pro_until = NULL, pro_source = NULL WHERE sub = ?", row.sub);
+      else return json({ ok: false, error: "This Pro comes from a Stripe subscription — cancel it in Stripe instead." });
+      return json({ ok: true, user: this.publicRow(this.one("SELECT * FROM users WHERE sub = ?", row.sub), now) });
+    }
+
+    if (url.pathname === "/stripe") {
+      return json(this.applyStripeEvent(body.event, now));
+    }
+
+    if (url.pathname === "/users") {
+      const rows = this.sql.exec("SELECT * FROM users ORDER BY last_seen DESC LIMIT 500").toArray();
+      return json({ users: rows.map((r) => this.publicRow(r, now)), freeBillsPerMonth: FREE_BILLS_PER_MONTH });
+    }
+
+    return json({ error: "Not found" }, 404);
+  }
+
+  publicRow(r, now) {
+    const ent = this.entitlement(r, false, now);
+    return {
+      sub: r.sub, email: r.email, name: r.name, createdAt: r.created_at, lastSeen: r.last_seen,
+      tier: ent.tier, proUntil: r.pro_until && r.pro_until < FOREVER ? r.pro_until : null, proForever: r.pro_until === FOREVER,
+      proSource: r.pro_source, stripeStatus: r.stripe_status, hasStripeCustomer: Boolean(r.stripe_customer),
+      billsMonth: r.bills_month, scansMonth: r.scans_month, billsTotal: r.bills_total, scansTotal: r.scans_total,
+      pending: r.sub.startsWith("email:"),
+    };
+  }
+
+  // Idempotent: each Stripe event id is applied once. Users are matched by the
+  // sub we stamped into metadata / client_reference_id, then by customer id,
+  // then by verified email as a last resort.
+  applyStripeEvent(event, now) {
+    if (!event || typeof event.id !== "string") return { applied: false, reason: "bad event" };
+    if (this.one("SELECT id FROM stripe_events WHERE id = ?", event.id)) return { applied: false, reason: "duplicate" };
+    this.sql.exec("INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)", event.id, String(event.type).slice(0, 80), now);
+    // Keep the idempotency table bounded.
+    this.sql.exec("DELETE FROM stripe_events WHERE created_at < ?", now - 30 * DAY_MS);
+
+    const obj = event.data?.object || {};
+    const find = ({ sub, customer, subscription, email }) => {
+      let row = null;
+      if (sub) row = this.one("SELECT * FROM users WHERE sub = ?", sub);
+      if (!row && customer) row = this.one("SELECT * FROM users WHERE stripe_customer = ? ORDER BY last_seen DESC LIMIT 1", customer);
+      if (!row && subscription) row = this.one("SELECT * FROM users WHERE stripe_subscription = ? LIMIT 1", subscription);
+      if (!row && email) row = this.one("SELECT * FROM users WHERE email = ? ORDER BY last_seen DESC LIMIT 1", String(email).toLowerCase());
+      return row;
+    };
+
+    switch (event.type) {
+      case "checkout.session.completed": {
+        if (obj.mode && obj.mode !== "subscription") return { applied: false, reason: "not a subscription" };
+        const sub = obj.client_reference_id || obj.metadata?.sub || null;
+        const customer = typeof obj.customer === "string" ? obj.customer : obj.customer?.id;
+        const subscription = typeof obj.subscription === "string" ? obj.subscription : obj.subscription?.id;
+        const email = obj.customer_details?.email || obj.customer_email;
+        const row = find({ sub, customer, subscription, email });
+        if (!row) return { applied: false, reason: "no matching user" };
+        // Provisional Pro until the subscription event carries the real period end.
+        const provisional = Math.max(row.pro_source === "stripe" ? row.pro_until || 0 : 0, now + 35 * DAY_MS);
+        this.sql.exec(
+          "UPDATE users SET stripe_customer = COALESCE(?, stripe_customer), stripe_subscription = COALESCE(?, stripe_subscription), stripe_status = 'active', pro_source = 'stripe', pro_until = ? WHERE sub = ?",
+          customer || null, subscription || null, provisional, row.sub,
+        );
+        return { applied: true, sub: row.sub };
+      }
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted": {
+        const sub = obj.metadata?.sub || null;
+        const customer = typeof obj.customer === "string" ? obj.customer : obj.customer?.id;
+        const row = find({ sub, customer, subscription: obj.id });
+        if (!row) return { applied: false, reason: "no matching user" };
+        const status = String(obj.status || (event.type.endsWith("deleted") ? "canceled" : ""));
+        // current_period_end moved onto subscription items in newer Stripe API versions.
+        const periodEndSec = obj.current_period_end ?? obj.items?.data?.[0]?.current_period_end;
+        const periodEnd = Number.isFinite(periodEndSec) ? periodEndSec * 1000 : now + 35 * DAY_MS;
+        const keeps = ["active", "trialing", "past_due"].includes(status);
+        const proUntil = event.type.endsWith("deleted") || !keeps ? Math.min(now - 1, row.pro_until || now) : periodEnd;
+        this.sql.exec(
+          "UPDATE users SET stripe_customer = COALESCE(?, stripe_customer), stripe_subscription = ?, stripe_status = ?, pro_source = 'stripe', pro_until = ? WHERE sub = ?",
+          customer || null, obj.id || row.stripe_subscription, status, proUntil, row.sub,
+        );
+        return { applied: true, sub: row.sub, status };
+      }
+      default:
+        return { applied: false, reason: "ignored type" };
+    }
   }
 }
 
