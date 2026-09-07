@@ -147,6 +147,46 @@ function billIdFrom(s) {
   return m ? m[1] : null;
 }
 
+// ---------- link previews ----------
+// Messaging apps fetch a bill link to build a preview card. Say what the bill
+// is (its name, item and people counts) but never amounts or people's names:
+// whoever fetches the preview already holds the link, and the card should
+// help the table recognise the bill, not leak it.
+const escAttr = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function billPreview(env, billId, url) {
+  const origin = "https://" + (env.CANONICAL_HOST || url.host);
+  const preview = {
+    title: "Splitty · split the bill",
+    description: "Tap what you had — totals update live on every phone with this link.",
+    url: origin + url.pathname,
+    image: origin + "/icons/og-card.png",
+  };
+  try {
+    // Bounded: a slow Durable Object must not hold up the page; the generic
+    // card is fine in that case.
+    const stub = env.BILL_ROOM.get(env.BILL_ROOM.idFromName(billId));
+    const res = await Promise.race([stub.fetch("https://do/state"), new Promise((r) => setTimeout(() => r(null), 1000))]);
+    if (res && res.ok) {
+      const { bill } = await res.json();
+      const items = bill.items.length, people = bill.people.length;
+      preview.title = bill.restaurant + " · Splitty";
+      preview.description = `${items} item${items === 1 ? "" : "s"} · ${people} ${people === 1 ? "person" : "people"} so far. Tap what you had — totals update live.`;
+    }
+  } catch {}
+  return preview;
+}
+
+function previewTags(p) {
+  return [
+    ["property", "og:type", "website"], ["property", "og:site_name", "Splitty"],
+    ["property", "og:title", p.title], ["property", "og:description", p.description], ["property", "og:url", p.url],
+    ["property", "og:image", p.image], ["property", "og:image:width", "1200"], ["property", "og:image:height", "630"],
+    ["property", "og:image:type", "image/png"], ["property", "og:image:alt", "Splitty"],
+    ["name", "twitter:card", "summary"],
+  ].map(([attr, k, v]) => `<meta ${attr}="${k}" content="${escAttr(v)}">`).join("");
+}
+
 function publicBill(bill) {
   return {
     ...bill,
@@ -449,11 +489,17 @@ export default {
       if (path === "/api/parse" && request.method === "POST") return parseReceipt(request, env);
 
       if (/^\/b\/[A-Za-z0-9_-]{16,64}$/.test(path)) {
-        const res = await env.ASSETS.fetch(new Request(new URL("/bill.html", url.origin)));
+        const [res, preview] = await Promise.all([
+          env.ASSETS.fetch(new Request(new URL("/bill.html", url.origin))),
+          billPreview(env, path.slice(3), url),
+        ]);
         const headers = new Headers(res.headers);
         headers.set("referrer-policy", "no-referrer");
         headers.set("x-robots-tag", "noindex");
-        return new Response(res.body, { status: res.status, headers });
+        return new HTMLRewriter()
+          .on("title", { element(el) { el.setInnerContent(preview.title); } })
+          .on("head", { element(el) { el.append(previewTags(preview), { html: true }); } })
+          .transform(new Response(res.body, { status: res.status, headers }));
       }
 
       return env.ASSETS.fetch(request);

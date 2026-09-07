@@ -53,6 +53,7 @@ One Cloudflare Workers project, no build step, no framework:
   - **`BillRoom`** (one per bill) — SQLite-backed DO that is simultaneously the database, the write serializer (single-threaded actor: simultaneous taps can't conflict), and the WebSocket hub (Hibernation API; full-state versioned broadcasts).
   - **`Meter`** (singleton) — daily per-IP, per-account (when signed in) and global rate caps on the endpoints that cost money.
   - **`Accounts`** (singleton, SQLite) — sign-in accounts, free-tier usage per month, Pro entitlements (Stripe / admin), Stripe webhook idempotency.
+- **Link previews** — the Worker injects Open Graph tags into each bill page (bill name, item and people counts; never amounts or names) so a pasted link shows a card in iMessage, WhatsApp, Slack and the like; the static pages carry fixed tags; the card image is `public/icons/og-card.png` (1200×630).
 - **Security model** — capability URLs (128-bit bill IDs); hashed creator + per-person tokens; idempotent `set_claim` / `set_paid` intents (replays are no-ops); payment handles validated per network server-side and rendered only as deep links; same-origin enforcement on POSTs; per-connection message throttles; CSP + no-referrer + noindex headers.
 
 ## Develop
@@ -68,7 +69,7 @@ npm run dev        # http://localhost:8787
 Integration tests run against the live `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing:
 
 ```bash
-npm test           # 24 tests: auth, create, realtime claims/locks/edits, quantities, settle up, tiers, admin + deletion requests, Stripe webhooks, throttles, legal pages, PWA manifest
+npm test           # 25 tests: auth, create, realtime claims/locks/edits, quantities, settle up, tiers, admin + deletion requests, Stripe webhooks, throttles, legal pages, PWA manifest, link previews
 npm run test:meter # also trips the daily per-IP create cap (burns local budget — run last)
 npm run dev:reset  # clear local Durable Object state, then restart npm run dev
 ```

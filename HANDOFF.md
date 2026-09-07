@@ -50,7 +50,13 @@ The README covers how the app works; this file covers **where we are and what to
     iOS standalone mode breaks Google's sign-in popup, so the icon opens the site in the
     browser. Switch to `standalone` only after adding the GIS redirect flow (`ux_mode:
     "redirect"` + a server endpoint that verifies the posted credential and `g_csrf_token`).
-  - 24 integration tests in `test/integration.mjs` (run against `wrangler dev`).
+  - **Link previews** (2026-09-07): `/b/<id>` responses get Open Graph + Twitter tags via
+    HTMLRewriter (bill name, item/people counts, canonical URL, `icons/og-card.png` 1200×630 as
+    the image; the Durable Object lookup is bounded to 1 s and runs alongside the asset fetch);
+    the privacy page §3 discloses it. Static pages carry fixed tags. Icons and the card are
+    generated, not hand-drawn — the generator script lived in the session scratchpad; regenerate
+    from the favicon SVG shapes if the branding changes.
+  - 25 integration tests in `test/integration.mjs` (run against `wrangler dev`).
 - **Cloudflare variables/secrets currently set on the Worker:** `ANTHROPIC_API_KEY` (secret),
   `SESSION_SECRET` (secret), `GOOGLE_CLIENT_ID` (text, also in `wrangler.toml`),
   `ADMIN_EMAILS` (secret: `indranet.technologies@gmail.com,sebaguinot@gmail.com`),

@@ -780,6 +780,24 @@ test("legal pages: terms and privacy serve, link to each other, are linked from 
   assert.ok(bill.includes('href="/terms"') && bill.includes('href="/privacy"'), "bill page footer links to both");
 });
 
+test("link previews: bill pages carry Open Graph tags with the bill name and counts, never amounts", async () => {
+  const cookie = mintSession();
+  const { billId } = (await api("/api/bills", { method: "POST", body: { ...SAMPLE, restaurant: "Preview & Co <3" }, cookie })).data;
+  const html = await (await fetch(BASE + "/b/" + billId)).text();
+  assert.ok(html.includes('<meta property="og:title" content="Preview &amp; Co &lt;3 · Splitty">'), "og:title is the escaped bill name");
+  assert.ok(html.includes('<meta property="og:description" content="3 items · 0 people so far.'), "og:description carries counts");
+  assert.ok(html.includes("<title>Preview &amp; Co &lt;3 · Splitty</title>"), "the page title is the bill name");
+  assert.match(html, new RegExp('<meta property="og:url" content="https://[^"/]+/b/' + billId + '">'), "absolute og:url");
+  assert.match(html, /<meta property="og:image" content="https:\/\/[^"/]+\/icons\/og-card\.png">/, "absolute og:image");
+  assert.ok(!html.includes("1499") && !html.includes("14.99") && !html.includes("Burger"), "no prices or items in the preview");
+  const unknown = await (await fetch(BASE + "/b/" + "x".repeat(22))).text();
+  assert.ok(unknown.includes('<meta property="og:title" content="Splitty · split the bill">'), "unknown bills get the generic card");
+  for (const page of ["/", "/terms", "/privacy"]) {
+    const h = await (await fetch(BASE + page)).text();
+    assert.ok(h.includes('property="og:title"') && /content="https:\/\/[^"/]+\/icons\/og-card\.png"/.test(h), page + " has static preview tags");
+  }
+});
+
 test("pwa: the manifest and icons serve, and every page links them", async () => {
   const m = await fetch(BASE + "/manifest.webmanifest");
   assert.equal(m.status, 200);
@@ -787,7 +805,7 @@ test("pwa: the manifest and icons serve, and every page links them", async () =>
   assert.equal(manifest.short_name, "Splitty");
   assert.ok(["minimal-ui", "standalone"].includes(manifest.display), "installable display mode");
   assert.ok(manifest.icons.some((i) => i.purpose === "maskable"), "has a maskable icon");
-  for (const src of [...manifest.icons.map((i) => i.src), "/icons/apple-touch-icon.png"]) {
+  for (const src of [...manifest.icons.map((i) => i.src), "/icons/apple-touch-icon.png", "/icons/og-card.png"]) {
     const r = await fetch(BASE + src);
     assert.equal(r.status, 200, src);
     assert.match(r.headers.get("content-type") || "", /image\/png/, src);

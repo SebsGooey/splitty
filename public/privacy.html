@@ -11,6 +11,17 @@
 <meta name="theme-color" content="#14161b">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-title" content="Splitty">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Splitty">
+<meta property="og:title" content="Splitty · privacy policy">
+<meta property="og:description" content="What Splitty stores, why, who else sees it, how long it lives, and how to get it removed.">
+<meta property="og:url" content="https://splitty.cc/privacy">
+<meta property="og:image" content="https://splitty.cc/icons/og-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="Splitty">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -22,7 +33,7 @@
   <hr class="rule">
 
   <section class="legal">
-<p class="meta">Effective September 6, 2026</p>
+<p class="meta">Effective September 7, 2026</p>
 
 <h2>1. Who we are</h2>
 <p>Splitty (<a href="/">splitty.cc</a>) is made and run by <b>Indranet Technologies</b>. We decide how and why personal data is used on Splitty, which makes us the "controller" in privacy-law terms. Contact us at <a href="mailto:hello@splitty.cc">hello@splitty.cc</a>; we'll give you a postal address for formal correspondence on request.</p>
@@ -40,7 +51,7 @@
 </ul>
 
 <h2>3. Bills</h2>
-<p><b>What a bill holds, and who sees it.</b> A bill contains: its name (usually the restaurant); items, quantities, prices, tax and tip; each person's name, color, claims and share; who has been marked paid, and when; the creator's payment handles, if added; which person is the creator, if they joined; whether it's locked; and when it was created and last changed. Anyone with the link can see all of it, on the page and as raw data, without signing in. Links can be forwarded and we can't tell who has one. Bill ids are 128-bit random, so links are very hard to guess, and bill pages are hidden from search engines and send no referrer. But "private" means unguessable, not locked down. Don't put anything on a bill you wouldn't want the whole table, and whoever they forward it to, to see.</p>
+<p><b>What a bill holds, and who sees it.</b> A bill contains: its name (usually the restaurant); items, quantities, prices, tax and tip; each person's name, color, claims and share; who has been marked paid, and when; the creator's payment handles, if added; which person is the creator, if they joined; whether it's locked; and when it was created and last changed. Anyone with the link can see all of it, on the page and as raw data, without signing in. Links can be forwarded and we can't tell who has one. Bill ids are 128-bit random, so links are very hard to guess, and bill pages are hidden from search engines and send no referrer. When a bill link is pasted into a messaging app, that app may fetch a preview card showing the bill name and how many items and people are on it; amounts and names aren't in the preview. But "private" means unguessable, not locked down. Don't put anything on a bill you wouldn't want the whole table, and whoever they forward it to, to see.</p>
 <p><b>Joining.</b> You type a name (up to 40 characters) and the bill adds you. We don't check it's really you: anyone with the link can join under any name. Your browser gets a random token that proves you're you on this bill; we store only a hash of it (section 10). If you tap "just watching", nothing about you is stored.</p>
 <p><b>What the creator can do.</b> The person who made the bill can edit the name, items, tax and tip; add or clear payment handles; claim items and mark paid for anyone; and lock or unlock the bill. Locking stops new joins and claim changes by everyone else; a locked bill stays readable to anyone with the link, and people can still mark themselves paid. The bill's live connection also lets the creator rename anyone on the bill or remove them from it (which drops their claims and paid mark), and lets you rename or remove yourself; there's no button for this yet.</p>
 <p><b>How long it lives.</b> Ninety days after the last change (a join, a claim, an edit, a payment-handle change, a paid mark, a lock or unlock, a rename or removal, and so on), the bill and everyone on it is wiped from our storage and the link shows "This bill doesn't exist". Just opening the bill does not reset that clock; a bill people keep editing keeps living. We keep no history of earlier versions.</p>

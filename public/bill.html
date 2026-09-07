@@ -256,7 +256,7 @@ function firstRender() {
 
 function render() {
   if (!bill) return;
-  document.title = "Splitty · " + bill.restaurant;
+  document.title = bill.restaurant + " · Splitty";
   $("billTitle").innerHTML = esc(bill.restaurant) + (bill.locked ? " · 🔒 locked" : "");
 
   // If we were removed from the bill (or picked someone who was), reset identity.
