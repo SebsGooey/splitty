@@ -44,7 +44,13 @@ The README covers how the app works; this file covers **where we are and what to
     no longer say Turnstile is "already wired" — **only the server half exists** (the create
     page renders no widget and sends no token), so setting `TURNSTILE_SECRET` today would 403
     every scan.
-  - 23 integration tests in `test/integration.mjs` (run against `wrangler dev`).
+  - **Add to home screen** (2026-09-07): `public/manifest.webmanifest` + PNG icons in
+    `public/icons/` (rendered from the favicon by a script, not hand-drawn), linked from every
+    page with a theme colour and an apple-touch-icon. `display` is **`minimal-ui` on purpose**:
+    iOS standalone mode breaks Google's sign-in popup, so the icon opens the site in the
+    browser. Switch to `standalone` only after adding the GIS redirect flow (`ux_mode:
+    "redirect"` + a server endpoint that verifies the posted credential and `g_csrf_token`).
+  - 24 integration tests in `test/integration.mjs` (run against `wrangler dev`).
 - **Cloudflare variables/secrets currently set on the Worker:** `ANTHROPIC_API_KEY` (secret),
   `SESSION_SECRET` (secret), `GOOGLE_CLIENT_ID` (text, also in `wrangler.toml`),
   `ADMIN_EMAILS` (secret: `indranet.technologies@gmail.com,sebaguinot@gmail.com`),
@@ -98,8 +104,7 @@ The README covers how the app works; this file covers **where we are and what to
 6. **Optional polish, roughly in value order:** self-serve "delete my account" (needs a Stripe
    cancel-subscription call first — the admin route refuses until the subscription is cancelled);
    the Turnstile *client* half (widget + `turnstileToken` in the scan request +
-   `challenges.cloudflare.com` in the CSP) before ever setting `TURNSTILE_SECRET`; PWA manifest
-   + icons; a landing section above the create form for logged-out visitors; lightweight
+   `challenges.cloudflare.com` in the CSP) before ever setting `TURNSTILE_SECRET`; a landing section above the create form for logged-out visitors; lightweight
    analytics (Armchair uses PostHog through a first-party proxy — **update privacy.html §8 and
    §17 first**, it currently promises none); an "archive" of a creator's past bills (needs
    storing bill ids per account — also a privacy-page change, bills are currently unlinked).

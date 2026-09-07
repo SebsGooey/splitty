@@ -48,7 +48,7 @@ Pro comes from a Stripe subscription, an admin grant, or being listed in `ADMIN_
 
 One Cloudflare Workers project, no build step, no framework:
 
-- **`public/`** — static vanilla-JS frontend (create page, bill page, admin page, terms + privacy pages, shared `pay.js` / `money.js`) served via Workers Static Assets.
+- **`public/`** — static vanilla-JS frontend (create page, bill page, admin page, terms + privacy pages, shared `pay.js` / `money.js`, web-app manifest + icons so it can be added to a home screen) served via Workers Static Assets.
 - **`src/worker.js`** — the Worker (routing, bill creation, receipt parsing via the Anthropic API) plus two Durable Objects:
   - **`BillRoom`** (one per bill) — SQLite-backed DO that is simultaneously the database, the write serializer (single-threaded actor: simultaneous taps can't conflict), and the WebSocket hub (Hibernation API; full-state versioned broadcasts).
   - **`Meter`** (singleton) — daily per-IP, per-account (when signed in) and global rate caps on the endpoints that cost money.
@@ -68,7 +68,7 @@ npm run dev        # http://localhost:8787
 Integration tests run against the live `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing:
 
 ```bash
-npm test           # 23 tests: auth, create, realtime claims/locks/edits, quantities, settle up, tiers, admin + deletion requests, Stripe webhooks, throttles, legal pages
+npm test           # 24 tests: auth, create, realtime claims/locks/edits, quantities, settle up, tiers, admin + deletion requests, Stripe webhooks, throttles, legal pages, PWA manifest
 npm run test:meter # also trips the daily per-IP create cap (burns local budget — run last)
 npm run dev:reset  # clear local Durable Object state, then restart npm run dev
 ```

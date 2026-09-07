@@ -780,6 +780,26 @@ test("legal pages: terms and privacy serve, link to each other, are linked from 
   assert.ok(bill.includes('href="/terms"') && bill.includes('href="/privacy"'), "bill page footer links to both");
 });
 
+test("pwa: the manifest and icons serve, and every page links them", async () => {
+  const m = await fetch(BASE + "/manifest.webmanifest");
+  assert.equal(m.status, 200);
+  const manifest = JSON.parse(await m.text());
+  assert.equal(manifest.short_name, "Splitty");
+  assert.ok(["minimal-ui", "standalone"].includes(manifest.display), "installable display mode");
+  assert.ok(manifest.icons.some((i) => i.purpose === "maskable"), "has a maskable icon");
+  for (const src of [...manifest.icons.map((i) => i.src), "/icons/apple-touch-icon.png"]) {
+    const r = await fetch(BASE + src);
+    assert.equal(r.status, 200, src);
+    assert.match(r.headers.get("content-type") || "", /image\/png/, src);
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    assert.deepEqual([...bytes.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47], src + " is a PNG");
+  }
+  for (const page of ["/", "/b/" + "x".repeat(22), "/admin.html", "/terms", "/privacy"]) {
+    const html = await (await fetch(BASE + page)).text();
+    assert.ok(html.includes('rel="manifest"') && html.includes('rel="apple-touch-icon"'), page + " links the manifest and touch icon");
+  }
+});
+
 // Opt-in (`node test/integration.mjs --meter`): it burns the local per-IP daily
 // create budget, so every later create from this machine 429s until the local
 // DO state is reset (`npm run dev:reset`). Keep it last.
