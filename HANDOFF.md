@@ -21,7 +21,9 @@ The README covers how the app works; this file covers **where we are and what to
   idempotent webhook — **dormant until the three `STRIPE_*` values exist**; the upgrade button
   says "Pro — coming soon".
 - **Shipped 2026-09-06 (the "legal pages" commit):**
-  - **`/terms.html` and `/privacy.html`**, receipt-styled, linked from the create-page and
+  - **`/terms` and `/privacy`** (`public/terms.html`, `public/privacy.html`; the asset layer
+    307s the `.html` form to the extensionless URL, so use `https://splitty.cc/terms` and
+    `https://splitty.cc/privacy` everywhere), receipt-styled, linked from the create-page and
     bill-page footers, under the Google sign-in button ("By signing in you agree…") and next
     to the Upgrade button ("renews monthly, cancel any time"). Written from a three-lens code
     inventory; every factual claim (cookie, tokens, localStorage keys, 90-day inactivity
@@ -56,7 +58,7 @@ The README covers how the app works; this file covers **where we are and what to
 1. **Set up hello@splitty.cc first** (Cloudflare → Email Routing → forward to the gmail).
    Both legal pages name it as the only contact and the deletion-request channel; until it
    forwards, mail bounces. Use it as the Stripe support email too.
-2. **Read `/terms.html` and `/privacy.html` once as the operator** and confirm the decisions
+2. **Read `/terms` and `/privacy` once as the operator** and confirm the decisions
    embedded in them (each is a one-line edit if you want something else):
    - operator named as **Indranet Technologies**; **no postal address** is published
      ("available on request") — add one if you have it; California/EU consumer rules expect

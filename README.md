@@ -40,7 +40,7 @@ Pro comes from a Stripe subscription, an admin grant, or being listed in `ADMIN_
    - Optional: `PRO_PRICE_LABEL` if the price isn't $2.99 / month.
    - Enable the Customer Portal in Stripe (Settings → Billing → Customer portal) so "manage subscription" works.
 
-3. **Legal pages** — `/terms.html` and `/privacy.html` are linked from the create and bill page footers. Paste their URLs into the Google OAuth consent screen (Cloud console → APIs & Services → OAuth consent screen → app domain) and into Stripe (Settings → Business → Public details) before charging anyone.
+3. **Legal pages** — `/terms` and `/privacy` (files `public/terms.html` and `public/privacy.html`; the asset layer 307s the `.html` form to the extensionless URL) are linked from the create and bill page footers. Paste `https://splitty.cc/terms` and `https://splitty.cc/privacy` into the Google OAuth consent screen (Cloud console → APIs & Services → OAuth consent screen → app domain) and into Stripe (Settings → Business → Public details) before charging anyone.
 
    Until all three `STRIPE_*` values exist the upgrade button reads "Pro — coming soon" and only admin grants can make someone Pro. Webhooks are signature-verified (5-minute tolerance), idempotent by event id, and tolerate both the classic and the 2025+ (`items.data[0].current_period_end`) subscription shapes. A cancelled subscription drops to Free at once; `past_due` keeps Pro for a 3-day grace while Stripe retries the card.
 

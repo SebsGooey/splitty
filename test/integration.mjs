@@ -758,8 +758,8 @@ test("admin: deletion on request — an account record, one person on a bill, or
 });
 
 test("legal pages: terms and privacy serve, link to each other, are linked from both footers, no placeholders", async () => {
-  for (const p of ["/terms.html", "/privacy.html"]) {
-    const res = await fetch(BASE + p);
+  for (const p of ["/terms", "/privacy"]) {
+    const res = await fetch(BASE + p, { redirect: "manual" });
     assert.equal(res.status, 200, p);
     assert.match(res.headers.get("content-type") || "", /text\/html/, p);
     const html = await res.text();
@@ -768,14 +768,16 @@ test("legal pages: terms and privacy serve, link to each other, are linked from 
     assert.match(html, /Effective [A-Z][a-z]+ \d{1,2}, 20\d\d/, p + " has an effective date");
     assert.match(html, /Indranet Technologies/, p + " names the operator");
     assert.match(html, /hello@splitty\.cc/, p + " gives a contact address");
-    assert.ok(html.includes('href="/privacy.html"') && html.includes('href="/terms.html"'), p + " links to both legal pages");
+    assert.ok(html.includes('href="/privacy"') && html.includes('href="/terms"'), p + " links to both legal pages");
     assert.doesNotMatch(html, /TODO|\[insert|\[your |\[company|lorem ipsum|\{\{/i, p + " has no placeholders");
     assert.doesNotMatch(html, /<script/i, p + " needs no script");
   }
+  const legacy = await fetch(BASE + "/terms.html", { redirect: "manual" });
+  assert.equal(legacy.status, 307, "the .html form redirects to the extensionless URL");
   const home = await (await fetch(BASE + "/")).text();
-  assert.ok(home.includes('href="/terms.html"') && home.includes('href="/privacy.html"'), "create page footer links to both");
+  assert.ok(home.includes('href="/terms"') && home.includes('href="/privacy"'), "create page footer links to both");
   const bill = await (await fetch(BASE + "/b/" + "x".repeat(22))).text();
-  assert.ok(bill.includes('href="/terms.html"') && bill.includes('href="/privacy.html"'), "bill page footer links to both");
+  assert.ok(bill.includes('href="/terms"') && bill.includes('href="/privacy"'), "bill page footer links to both");
 });
 
 // Opt-in (`node test/integration.mjs --meter`): it burns the local per-IP daily
