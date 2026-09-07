@@ -46,6 +46,8 @@ The tests mint a session cookie with the same HMAC scheme the Worker uses (`SESS
 
 ## Deploy
 
+Pushes to `main` deploy automatically — the Worker is connected to this repo through Cloudflare Workers Builds (Settings → Builds; deploy command `npx wrangler deploy`). Other branches get preview builds. Manual deploy still works:
+
 ```bash
 npx wrangler login
 npm run deploy
