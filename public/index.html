@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Splitty · split any bill</title>
 <meta name="description" content="Snap a receipt, share a link, split the bill with friends in realtime.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect x=%2710%27 y=%274%27 width=%2744%27 height=%2756%27 rx=%274%27 fill=%27%23fffdf7%27/%3E%3Cpath d=%27M18 20h28M18 30h28M18 40h18%27 stroke=%27%231a1a1a%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2746%27 cy=%2744%27 r=%278%27 fill=%27%23e0523a%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
+<script src="/pay.js"></script>
 </head>
 <body>
 <main class="receipt">
@@ -57,6 +59,15 @@
   </div>
 
   <div class="trow big"><span class="lab">Total:</span><span id="totalPreview">$0.00</span></div>
+
+  <hr class="rule">
+  <details class="payd" id="payDetails">
+    <summary>💸 Get paid back — add your Venmo / Cash App / PayPal <span class="opt">(optional)</span></summary>
+    <p class="hint" style="text-align:left;margin:6px 0 10px">Everyone on the bill gets a <b>Pay</b> button with their exact amount filled in. Remembered on this device for next time.</p>
+    <div class="money-row"><label for="payVenmo">Venmo</label><input type="text" id="payVenmo" placeholder="@username" maxlength="60" autocomplete="off" autocapitalize="off" style="width:190px"></div>
+    <div class="money-row"><label for="payCashapp">Cash App</label><input type="text" id="payCashapp" placeholder="$cashtag" maxlength="60" autocomplete="off" autocapitalize="off" style="width:190px"></div>
+    <div class="money-row"><label for="payPaypal">PayPal.Me</label><input type="text" id="payPaypal" placeholder="paypal.me/name" maxlength="60" autocomplete="off" autocapitalize="off" style="width:190px"></div>
+  </details>
 
   <hr class="rule">
   <button class="btn" id="createBtn">Create bill &amp; get share link</button>
@@ -210,6 +221,15 @@ function updateTotal() {
 $("addItemBtn").onclick = () => addRow().querySelector(".name").focus();
 for (let i = 0; i < 3; i++) addRow();
 
+// Prefill payment handles remembered from the last bill made on this device.
+try {
+  const saved = JSON.parse(localStorage.getItem("splitty-pay") || "{}");
+  $("payVenmo").value = payHandleDisplay("venmo", saved.venmo);
+  $("payCashapp").value = payHandleDisplay("cashapp", saved.cashapp);
+  $("payPaypal").value = payHandleDisplay("paypal", saved.paypal);
+  if (saved.venmo || saved.cashapp || saved.paypal) $("payDetails").open = true;
+} catch {}
+
 // ---- receipt scan ----
 $("scanBtn").onclick = () => $("photoInput").click();
 $("photoInput").addEventListener("change", async (e) => {
@@ -284,6 +304,12 @@ $("createBtn").onclick = async () => {
       return showError("Some items have no price — tap Create again if that's intentional.");
     }
   }
+  const pay = cleanPayClient({ venmo: $("payVenmo").value, cashapp: $("payCashapp").value, paypal: $("payPaypal").value });
+  if (pay.error) {
+    $("payDetails").open = true;
+    return showError(pay.error);
+  }
+  try { localStorage.setItem("splitty-pay", JSON.stringify(pay.value)); } catch {}
   const tipMode = $("tipMode").value;
   const body = {
     restaurant: $("restaurant").value.trim(),
@@ -292,6 +318,7 @@ $("createBtn").onclick = async () => {
     tip: tipMode === "percent"
       ? { mode: "percent", value: tipPct($("tipValue").value) }
       : { mode: "amount", value: toCents($("tipValue").value) },
+    pay: pay.value,
   };
   $("createBtn").disabled = true;
   $("createBtn").textContent = "Creating…";

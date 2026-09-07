@@ -5,6 +5,9 @@
   "description": "Splitty — snap a receipt, share a link, split the bill in realtime",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:reset": "node -e \"require('fs').rmSync('.wrangler/state',{recursive:true,force:true});console.log('local Durable Object state cleared — restart npm run dev')\"",
+    "test": "node test/integration.mjs",
+    "test:meter": "node test/integration.mjs --meter",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

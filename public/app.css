@@ -145,6 +145,41 @@ input:focus, select:focus { outline: 2px solid var(--ink); border-color: var(--i
 .person-card .mini { font-size: .74rem; color: var(--ink-soft); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; }
 .person-card ul { margin: 6px 0 0; padding: 0 0 0 2px; list-style: none; font-size: .74rem; color: var(--ink-soft); }
 .person-card li { display: flex; justify-content: space-between; }
+/* Settle up */
+.person-card.paid { border-style: dashed; background: #fbfaf4; }
+.person-card.paid h3 .owes { text-decoration: line-through; text-decoration-thickness: 2px; color: var(--ink-soft); }
+.paid-badge {
+  font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ok); border: 1.5px solid var(--ok); border-radius: 999px; padding: 1px 7px;
+}
+.paid-badge.host { color: var(--ink-soft); border-color: var(--line); }
+.pay-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 9px; }
+.paylink {
+  display: inline-flex; align-items: center; text-decoration: none;
+  font-weight: 800; font-size: .74rem; padding: 6px 11px; border-radius: 999px;
+  color: #fff; background: var(--ink); white-space: nowrap;
+}
+.paylink.venmo { background: #008cff; }
+.paylink.cashapp { background: #00b544; }
+.paylink.paypal { background: #003087; }
+.paylink:active { transform: scale(.97); }
+.paidbtn {
+  margin-left: auto; background: transparent; color: var(--ink-soft);
+  border: 1.5px dashed #b9b4a4; border-radius: 999px; padding: 5px 10px;
+  font-size: .72rem; font-weight: 700;
+}
+.paidbtn:hover { color: var(--ink); border-color: var(--ink); }
+.paidbtn.undo { color: var(--ok); border-color: var(--ok); }
+#settleBar { margin-top: 10px; }
+#settleBar .hint:empty { display: none; }
+details.payd summary {
+  cursor: pointer; font-size: .8rem; font-weight: 700; color: var(--ink);
+  list-style: none; padding: 4px 0;
+}
+details.payd summary::-webkit-details-marker { display: none; }
+details.payd summary .opt { color: var(--ink-soft); font-weight: 400; }
+details.payd[open] summary { margin-bottom: 4px; }
+
 .banner {
   border: 2px dashed var(--accent); color: var(--accent);
   border-radius: 12px; padding: 10px 12px; margin: 10px 0;

@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Splitty · bill</title>
 <meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect x=%2710%27 y=%274%27 width=%2744%27 height=%2756%27 rx=%274%27 fill=%27%23fffdf7%27/%3E%3Cpath d=%27M18 20h28M18 30h28M18 40h18%27 stroke=%27%231a1a1a%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2746%27 cy=%2744%27 r=%278%27 fill=%27%23e0523a%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
+<script src="/pay.js"></script>
 </head>
 <body>
 <div class="conn" id="conn">reconnecting…</div>
@@ -50,16 +52,36 @@
     <hr class="rule">
     <p class="section-label">Each person owes</p>
     <div id="personTotals"></div>
+    <div id="settleBar" class="hidden">
+      <button class="btn ghost" id="summaryBtn" type="button">📋 copy summary</button>
+      <p class="hint" id="settleHint"></p>
+    </div>
 
     <div id="creatorTools" class="hidden">
       <hr class="rule">
       <p class="section-label">Creator tools</p>
+      <button class="btn ghost" id="payBtn" type="button">💸 payment details</button>
+      <div style="height:8px"></div>
       <button class="btn ghost" id="editBtn" type="button">✏️ edit items / tax / tip</button>
       <div style="height:8px"></div>
       <button class="btn ghost" id="lockBtn" type="button">🔒 lock bill</button>
       <p class="hint">Backup edit link (save it somewhere in case this browser forgets you):</p>
       <input type="text" id="editLink" readonly onclick="this.select()" style="font-size:.7rem">
     </div>
+  </div>
+
+  <!-- creator payment-details view -->
+  <div id="payView" class="hidden">
+    <p class="section-label">Get paid back</p>
+    <p class="hint" style="text-align:left;margin:0 0 10px">Everyone on the bill gets a <b>Pay</b> button with their exact amount filled in. Leave blank anything you don't use.</p>
+    <div class="money-row"><label for="payVenmo">Venmo</label><input type="text" id="payVenmo" placeholder="@username" maxlength="60" autocomplete="off" autocapitalize="off" style="width:190px"></div>
+    <div class="money-row"><label for="payCashapp">Cash App</label><input type="text" id="payCashapp" placeholder="$cashtag" maxlength="60" autocomplete="off" autocapitalize="off" style="width:190px"></div>
+    <div class="money-row"><label for="payPaypal">PayPal.Me</label><input type="text" id="payPaypal" placeholder="paypal.me/name" maxlength="60" autocomplete="off" autocapitalize="off" style="width:190px"></div>
+    <hr class="rule">
+    <button class="btn" id="paySave" type="button">Save payment details</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="payCancel" type="button">Cancel</button>
+    <p class="hint">Pasting a full profile link works too. People mark themselves as paid; you can too.</p>
   </div>
 
   <!-- creator edit view -->
@@ -257,6 +279,7 @@ function showView(name) {
   $("joinView").classList.toggle("hidden", name !== "join");
   $("billView").classList.toggle("hidden", name !== "bill");
   $("editView").classList.toggle("hidden", name !== "edit");
+  $("payView").classList.toggle("hidden", name !== "pay");
 }
 
 function firstRender() {
@@ -373,34 +396,120 @@ function render() {
     trow("TOTAL", fmt(t.subtotal + bill.taxCents + t.tipTotal), true);
 
   // per-person cards
+  const pay = bill.pay || {};
+  const paid = bill.paid || {};
+  const payee = bill.creatorPersonId || null; // the person who paid the restaurant, if they joined
+  const hasPay = PAY_NETWORKS.some((n) => pay[n.key]);
+  const note = "Splitty · " + bill.restaurant;
   const pt = $("personTotals");
   pt.innerHTML = "";
   if (!bill.people.length) pt.innerHTML = '<p class="hint">No one has joined yet.</p>';
   for (const row of t.perPerson) {
+    const pid = row.person.id;
+    const isPayee = pid === payee;
+    const isPaid = Boolean(paid[pid]);
+    const canMark = !isPayee && (isCreator || (me && pid === me.personId));
     const card = document.createElement("div");
-    card.className = "person-card";
+    card.className = "person-card" + (isPaid ? " paid" : "");
     card.style.setProperty("--pc", row.person.color);
     const list = row.items.map(({ item, part, of }) =>
       `<li><span>${esc(item.name)}${of > 1 ? ` <em>(1/${of})</em>` : ""}</span><span>${fmt(part)}</span></li>`).join("");
+    const badge = isPayee ? '<span class="paid-badge host">paid the bill</span>' : (isPaid ? '<span class="paid-badge">✓ paid</span>' : "");
     card.innerHTML =
       `<h3><span class="avatar" style="background:${row.person.color}">${esc(initials(row.person.name))}</span>` +
-      `${esc(row.person.name)}<span class="owes">${fmt(row.totalCents)}</span></h3>` +
+      `${esc(row.person.name)}${badge}<span class="owes">${fmt(row.totalCents)}</span></h3>` +
       `<div class="mini"><span>items ${fmt(row.shareCents)}</span><span>tax ${fmt(row.taxCents)}</span><span>tip ${fmt(row.tipCents)}</span></div>` +
       (list ? `<ul>${list}</ul>` : '<ul><li><span>nothing claimed yet…</span></li></ul>');
+
+    // Settle-up row: one deep link per network the creator offers, with this
+    // person's exact amount, plus the paid toggle for the person or creator.
+    // The payee's own card gets neither — they're the one being paid back.
+    if (!isPayee && ((hasPay && row.totalCents > 0 && !isPaid) || canMark || isPaid)) {
+      const payRow = document.createElement("div");
+      payRow.className = "pay-row";
+      if (hasPay && row.totalCents > 0 && !isPaid) {
+        for (const l of payLinks(pay, row.totalCents, note)) {
+          const a = document.createElement("a");
+          a.className = "paylink " + l.key;
+          a.href = l.url;
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.title = `Pay ${fmt(row.totalCents)} via ${l.label} (${l.handle(l.user)})`;
+          a.textContent = `${l.label} ${fmt(row.totalCents)}`;
+          payRow.appendChild(a);
+        }
+      }
+      if (canMark) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "paidbtn" + (isPaid ? " undo" : "");
+        b.textContent = isPaid ? "undo paid" : "mark as paid";
+        b.onclick = () => sendMsg({ type: "set_paid", personId: pid, paid: !isPaid,
+          token: me && pid === me.personId ? me.token : creatorToken });
+        payRow.appendChild(b);
+      }
+      if (payRow.childElementCount) card.appendChild(payRow);
+    }
     pt.appendChild(card);
   }
   if (bill.people.length) {
     const done = t.unclaimed === 0;
+    // Only people other than the payee owe anything.
+    const owing = t.perPerson.filter((r) => r.person.id !== payee);
+    const paidCount = owing.filter((r) => paid[r.person.id]).length;
+    const outstanding = owing.filter((r) => !paid[r.person.id]).reduce((a, r) => a + r.totalCents, 0);
+    const settled = done && owing.length > 0 && paidCount === owing.length;
     const banner = document.createElement("div");
-    banner.className = "banner" + (done ? " ok" : "");
-    banner.innerHTML = done
-      ? "<span>✓ every item is claimed</span>"
-      : `<span>unclaimed items</span><span>${fmt(t.unclaimed + t.unclaimedTax + t.unclaimedTip)} incl. tax/tip</span>`;
+    banner.className = "banner" + (settled || done ? " ok" : "");
+    if (settled) {
+      banner.innerHTML = "<span>✓ all settled up</span>";
+    } else if (done) {
+      banner.innerHTML = `<span>✓ every item is claimed</span>` +
+        (paidCount ? `<span>${paidCount}/${owing.length} paid · ${fmt(outstanding)} to go</span>` : "");
+    } else {
+      banner.innerHTML = `<span>unclaimed items</span><span>${fmt(t.unclaimed + t.unclaimedTax + t.unclaimedTip)} incl. tax/tip</span>`;
+    }
     pt.appendChild(banner);
   }
 
+  // Summary + settle hints
+  $("settleBar").classList.toggle("hidden", !bill.people.length);
+  $("settleHint").textContent = hasPay
+    ? "Pay buttons open the app with the amount filled in — then tap “mark as paid”."
+    : (isCreator ? "Add your Venmo / Cash App / PayPal under creator tools and everyone gets a Pay button." : "");
+
   if (isCreator) $("lockBtn").textContent = bill.locked ? "🔓 unlock bill" : "🔒 lock bill";
 }
+
+// ---------- group-chat summary ----------
+function summaryText() {
+  const t = computeTotals(bill);
+  const paid = bill.paid || {};
+  const payee = bill.people.find((p) => p.id === bill.creatorPersonId);
+  const lines = [`🧾 ${bill.restaurant} — ${fmt(t.subtotal + bill.taxCents + t.tipTotal)} total`];
+  for (const r of t.perPerson) {
+    const tag = payee && r.person.id === payee.id ? " (paid the bill)" : (paid[r.person.id] ? " ✓ paid" : "");
+    lines.push(`${r.person.name}: ${fmt(r.totalCents)}${tag}`);
+  }
+  if (t.unclaimed > 0) lines.push(`Unclaimed: ${fmt(t.unclaimed + t.unclaimedTax + t.unclaimedTip)} incl. tax/tip`);
+  const handles = payHandlesText(bill.pay || {});
+  if (handles) lines.push(`Pay ${payee ? payee.name + " " : ""}back via ${handles}`);
+  lines.push(location.origin + "/b/" + billId);
+  return lines.join("\n");
+}
+const SUMMARY_LABEL = "📋 copy summary";
+$("summaryBtn").onclick = async () => {
+  if (!bill) return;
+  const text = summaryText();
+  if (navigator.share) {
+    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    $("summaryBtn").textContent = "Copied — paste it in the chat";
+    setTimeout(() => ($("summaryBtn").textContent = SUMMARY_LABEL), 1800);
+  } catch { prompt("Copy this summary:", text); }
+};
 
 function trow(label, val, big) {
   return `<div class="trow${big ? " big" : ""}"><span class="lab">${label}:</span><span>${val}</span></div>`;
@@ -411,7 +520,9 @@ $("joinForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const name = $("joinName").value.trim();
   if (!name) return;
-  sendMsg({ type: "join", name });
+  // The creator token (when this device has one) marks this person as the
+  // payee — the one everybody else pays back.
+  sendMsg({ type: "join", name, token: creatorToken || undefined });
 });
 $("watchBtn").onclick = () => { watching = true; showView("bill"); };
 
@@ -431,6 +542,23 @@ $("shareBtn").onclick = async () => {
 
 // ---------- creator tools ----------
 $("lockBtn").onclick = () => sendMsg({ type: "lock", locked: !bill.locked, token: creatorToken });
+$("payBtn").onclick = () => {
+  const pay = bill.pay || {};
+  $("payVenmo").value = payHandleDisplay("venmo", pay.venmo);
+  $("payCashapp").value = payHandleDisplay("cashapp", pay.cashapp);
+  $("payPaypal").value = payHandleDisplay("paypal", pay.paypal);
+  showView("pay");
+  $("payVenmo").focus();
+};
+$("payCancel").onclick = () => showView("bill");
+$("paySave").onclick = () => {
+  const typed = { venmo: $("payVenmo").value, cashapp: $("payCashapp").value, paypal: $("payPaypal").value };
+  const res = cleanPayClient(typed);
+  if (res.error) return showError(res.error); // stay here so it can be fixed
+  // Remember on this device so the next bill's create page is prefilled.
+  try { localStorage.setItem("splitty-pay", JSON.stringify(res.value)); } catch {}
+  if (sendMsg({ type: "set_pay", token: creatorToken, pay: res.value })) showView("bill");
+};
 $("editBtn").onclick = () => {
   $("editRestaurant").value = bill.restaurant;
   $("editRows").innerHTML = "";

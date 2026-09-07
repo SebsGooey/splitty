@@ -61,10 +61,40 @@ function cleanBillFields(body) {
   return { restaurant, items, taxCents, tip };
 }
 
+// ---------- settle up: payment handles ----------
+// The creator shares where friends can pay them back. Stored as bare usernames
+// (no @ / $ / URL), validated per network, and turned into deep links with the
+// amount filled in on the bill page. An absent key means "not offered".
+const PAY_RULES = {
+  venmo: { re: /^[A-Za-z0-9_-]{5,30}$/, label: "Venmo username", rule: "5–30 letters, numbers, - or _" },
+  cashapp: { re: /^[A-Za-z][A-Za-z0-9_]{0,19}$/, label: "$Cashtag", rule: "starts with a letter, up to 20 letters or numbers" },
+  paypal: { re: /^[A-Za-z0-9]{1,20}$/, label: "PayPal.Me name", rule: "up to 20 letters or numbers" },
+};
+
+// Returns { value } with only the valid, non-empty handles, or { error } naming
+// the first field that doesn't look right (so the creator can fix it rather
+// than have it silently vanish). Pasted profile URLs and @/$ prefixes are OK.
+function cleanPay(pay) {
+  const value = {};
+  if (pay == null) return { value };
+  if (typeof pay !== "object") return { error: "Payment details are invalid." };
+  for (const [k, spec] of Object.entries(PAY_RULES)) {
+    let v = String(pay[k] ?? "").trim().slice(0, 120);
+    v = v.replace(/^(https?:\/\/)?(www\.)?(account\.)?(venmo\.com\/(u\/)?|cash\.app\/|paypal\.me\/|paypal\.com\/paypalme\/)/i, "");
+    v = v.replace(/[/?#].*$/, "").replace(/^[@$]+/, "").trim();
+    if (!v) continue;
+    if (!spec.re.test(v)) return { error: `That ${spec.label} doesn't look right — ${spec.rule}.` };
+    value[k] = v;
+  }
+  return { value };
+}
+
 function publicBill(bill) {
   return {
     ...bill,
     creatorTokenHash: undefined,
+    pay: bill.pay || {},
+    paid: bill.paid || {},
     people: bill.people.map(({ tokenHash, ...p }) => p),
   };
 }
@@ -337,6 +367,8 @@ async function createBill(request, env) {
   }
   const fields = cleanBillFields(body);
   if (fields.error) return json({ error: fields.error }, 400);
+  const pay = cleanPay(body.pay);
+  if (pay.error) return json({ error: pay.error }, 400);
 
   const meter = await meterCheck(env, request, "create", session);
   if (!meter.ok) return json({ error: meter.message }, 429);
@@ -354,6 +386,8 @@ async function createBill(request, env) {
     ...fields,
     people: [],
     claims: {},
+    pay: pay.value, // where to pay the creator back: { venmo?, cashapp?, paypal? }
+    paid: {}, // personId -> ms timestamp when marked as settled
     creatorTokenHash: await sha256(creatorToken),
     locked: false,
   };
@@ -725,6 +759,9 @@ export class BillRoom {
           tokenHash: await sha256(token),
         };
         bill.people.push(person);
+        // The creator joining as a person marks who the table pays back, so
+        // their own card gets no Pay button and the summary can name them.
+        if (isCreator) bill.creatorPersonId = person.id;
         changed = true;
         send({ type: "joined", personId: person.id, token });
         break;
@@ -774,7 +811,39 @@ export class BillRoom {
           if (next.length) bill.claims[itemId] = next;
           else delete bill.claims[itemId];
         }
+        if (bill.paid) delete bill.paid[p.id];
+        if (bill.creatorPersonId === p.id) delete bill.creatorPersonId;
         changed = true;
+        break;
+      }
+
+      case "set_pay": {
+        // Creator publishes (or clears) where the table should pay them back.
+        if (!isCreator) return send({ type: "error", message: "Only the bill creator can set payment details." });
+        const res = cleanPay(msg.pay);
+        if (res.error) return send({ type: "error", message: res.error });
+        if (JSON.stringify(res.value) !== JSON.stringify(bill.pay || {})) {
+          bill.pay = res.value;
+          changed = true;
+        }
+        break;
+      }
+
+      case "set_paid": {
+        // Settling up happens after the bill is locked, so lock doesn't apply.
+        // Idempotent like set_claim: marking paid twice is a no-op.
+        const p = bill.people.find((x) => x.id === msg.personId);
+        if (!p) return send({ type: "error", message: "That person no longer exists." });
+        if (!canActFor(p.id)) return send({ type: "error", message: `Only ${p.name} (or the creator) can mark that.` });
+        const paid = Boolean(msg.paid);
+        bill.paid = bill.paid || {};
+        if (paid && !bill.paid[p.id]) {
+          bill.paid[p.id] = Date.now();
+          changed = true;
+        } else if (!paid && bill.paid[p.id]) {
+          delete bill.paid[p.id];
+          changed = true;
+        }
         break;
       }
 

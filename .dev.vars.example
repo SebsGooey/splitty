@@ -1,0 +1,1 @@
+SESSION_SECRET=dev-secret-for-local-tests-only
