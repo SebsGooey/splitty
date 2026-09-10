@@ -137,6 +137,10 @@ test("config + me: auth is on in dev, anonymous has no user", async () => {
   assert.equal(c.status, 200);
   assert.equal(c.data.authRequired, true);
   assert.equal(c.data.authMisconfigured, false);
+  assert.equal(c.data.billing.enabled, false, "integration tests must never use live Stripe credentials");
+  assert.equal(c.data.billing.priceLabel, "$2.99 / month");
+  assert.equal(c.data.billing.freeBillsPerMonth, 3);
+  assert.equal(c.data.billing.proScansPerMonth, 30);
   const me = await api("/api/me");
   assert.equal(me.data.user, null);
   const meIn = await api("/api/me", { cookie: mintSession({ email: "a@b.c", name: "A" }) });
@@ -590,6 +594,7 @@ test("tiers: a new sign-in is free with 3 bills a month, the 4th is refused with
   assert.equal(me0.data.account.canScan, false);
   assert.equal(me0.data.account.isAdmin, false);
   assert.equal(me0.data.billing.enabled, false, "Stripe isn't configured locally");
+  assert.equal(me0.data.billing.proScansPerMonth, 30);
   for (let i = 0; i < 3; i++) await createBill({}, cookie);
   const me3 = await api("/api/me", { cookie });
   assert.equal(me3.data.account.billsUsed, 3);
@@ -601,6 +606,64 @@ test("tiers: a new sign-in is free with 3 bills a month, the 4th is refused with
   // Checkout isn't switched on yet.
   const co = await api("/api/billing/checkout", { method: "POST", body: {}, cookie });
   assert.equal(co.status, 501);
+  const portal = await api("/api/billing/portal", { method: "POST", body: {}, cookie });
+  assert.equal(portal.status, 501);
+});
+
+test("plans: disclose price and scan attempts; exhausted scans leave manual creation available", async () => {
+  const html = await (await fetch(BASE + "/")).text();
+  const summary = html.match(/<div[^>]*id="planSummary"[^>]*>([\s\S]*?)<\/div>/)?.[1];
+  assert.ok(summary, "the public plan summary is present before sign-in");
+  assert.match(summary, /\$2\.99 \/ month/);
+  assert.match(summary, /3 manual bills per calendar month/);
+  assert.match(summary, /unlimited manual bills/i);
+  assert.match(summary, /30<\/span> receipt scan attempts per calendar month/);
+  assert.match(summary, /1st at midnight UTC/);
+  assert.match(summary, /no rollover/);
+  assert.match(summary, /renews monthly; cancel any time/);
+
+  // Run the actual served account/scan gating code with a minimal DOM. This
+  // verifies the remaining-count and manual fallback without spending scans.
+  const start = html.indexOf("let parseEnabled =");
+  const end = html.indexOf("// Called on any 401", start);
+  assert.ok(start >= 0 && end > start, "the account gating script is present");
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) {
+      const classes = new Set();
+      elements.set(id, {
+        textContent: "", disabled: false,
+        classList: {
+          add: (...names) => names.forEach((name) => classes.add(name)),
+          remove: (...names) => names.forEach((name) => classes.delete(name)),
+          toggle: (name, active) => active ? classes.add(name) : classes.delete(name),
+          contains: (name) => classes.has(name),
+        },
+      });
+    }
+    return elements.get(id);
+  };
+  const context = vm.createContext({ $: element });
+  vm.runInContext(html.slice(start, end), context);
+  vm.runInContext(`
+    needAuth = true;
+    user = { email: "buyer@example.com" };
+    billing.enabled = true;
+    account = { isPro: true, billsLimit: null, billsLeft: null,
+      scansLimit: 30, scansLeft: 7, canScan: true, hasStripeCustomer: true };
+    refreshGates();
+  `, context);
+  assert.match(element("tierText").textContent, /7 of 30 scan attempts left this month/);
+  assert.equal(element("scanBtn").disabled, false);
+  assert.equal(element("createBtn").disabled, false);
+  assert.equal(element("manageRow").classList.contains("hidden"), false);
+
+  vm.runInContext("account.scansLeft = 0; account.canScan = false; refreshGates();", context);
+  assert.match(element("tierText").textContent, /0 of 30 scan attempts left this month/);
+  assert.equal(element("scanBtn").disabled, true);
+  assert.match(element("scanHint").textContent, /still enter items manually/);
+  assert.equal(element("createBtn").disabled, false, "scan quota must not disable manual bill creation");
+  assert.equal(element("createBtn").textContent, "Create bill & get share link");
 });
 
 test("tiers: admin emails are Pro, unlimited, and can grant or revoke Pro for others", async () => {
@@ -641,74 +704,71 @@ test("tiers: admin emails are Pro, unlimited, and can grant or revoke Pro for ot
 });
 
 const STRIPE_TEST_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "whsec_test_secret_for_local_tests";
-function stripeSigned(event, { secret = STRIPE_TEST_SECRET, t = Math.floor(Date.now() / 1000) } = {}) {
-  const raw = JSON.stringify(event);
+function stripeSignedRaw(raw, { secret = STRIPE_TEST_SECRET, t = Math.floor(Date.now() / 1000) } = {}) {
   const sig = createHmac("sha256", secret).update(`${t}.${raw}`).digest("hex");
   return { raw, header: `t=${t},v1=${sig}` };
 }
 async function postWebhook(event, opts) {
-  const { raw, header } = stripeSigned(event, opts);
+  return postWebhookRaw(JSON.stringify(event), opts);
+}
+async function postWebhookRaw(body, opts) {
+  const { raw, header } = stripeSignedRaw(body, opts);
   const res = await fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: raw });
   return { status: res.status, data: await res.json().catch(() => null) };
 }
 
-test("stripe: webhook verifies signatures and drives Pro through the subscription lifecycle", async () => {
+test("stripe: webhooks verify signatures and fail closed without canonical Stripe reconciliation", async () => {
+  assert.equal((await api("/api/config")).data.billing.enabled, false,
+    "synthetic webhook tests require local billing to be disabled");
   const sub = "buyer-" + Date.now();
   const cookie = mintSession({ sub, email: sub + "@example.com", name: "Buyer" });
   await api("/api/me", { cookie }); // creates the account row
   const evt = (id, type, object) => ({ id, type, data: { object } });
 
-  // Bad signature / stale timestamp / wrong secret → 400, nothing applied.
+  // These tests use local signatures only. Complete subscription lifecycle
+  // coverage uses mocked Stripe API responses in test/billing.mjs.
+  const missingSig = await fetch(BASE + "/api/stripe/webhook", { method: "POST", body: "{}" });
+  assert.equal(missingSig.status, 400);
   const badSig = await fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": "t=1,v1=deadbeef" }, body: "{}" });
   assert.equal(badSig.status, 400);
   const stale = await postWebhook(evt("evt_stale", "checkout.session.completed", { client_reference_id: sub }), { t: Math.floor(Date.now() / 1000) - 3600 });
   assert.equal(stale.status, 400);
   const wrong = await postWebhook(evt("evt_wrong", "checkout.session.completed", { client_reference_id: sub }), { secret: "whsec_other" });
   assert.equal(wrong.status, 400);
-  assert.equal((await api("/api/me", { cookie })).data.account.tier, "free");
+  const future = await postWebhook(evt("evt_future", "checkout.session.completed", {}), { t: Math.floor(Date.now() / 1000) + 3600 });
+  assert.equal(future.status, 400);
+  const signed = stripeSignedRaw(JSON.stringify(evt("evt_tampered", "checkout.session.completed", {})));
+  const tampered = await fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": signed.header }, body: signed.raw + " " });
+  assert.equal(tampered.status, 400, "signature covers the exact body bytes");
+  assert.equal((await postWebhookRaw("{invalid")).status, 400);
+  for (const invalid of [null, {}, { id: "evt_no_type" }, { id: 123, type: "checkout.session.completed" }]) {
+    assert.equal((await postWebhook(invalid)).status, 400, "a valid signature does not make an invalid event acceptable");
+  }
 
-  // Checkout completed → provisional Pro (stripe).
-  const ck = await postWebhook(evt("evt_ck_" + sub, "checkout.session.completed", {
-    mode: "subscription", client_reference_id: sub, customer: "cus_test123", subscription: "sub_test123", customer_details: { email: sub + "@example.com" },
-  }));
-  assert.equal(ck.status, 200);
-  assert.equal(ck.data.applied, true);
-  let me = await api("/api/me", { cookie });
-  assert.equal(me.data.account.tier, "pro");
-  assert.equal(me.data.account.proSource, "stripe");
-  assert.equal(me.data.account.hasStripeCustomer, true);
-  assert.equal(me.data.account.stripeCustomer, undefined);
-
-  // Duplicate delivery is a no-op.
-  const dup = await postWebhook(evt("evt_ck_" + sub, "checkout.session.completed", { client_reference_id: sub }));
-  assert.equal(dup.data.applied, false);
-
-  // Subscription updated with a real period end (newer API shape: on items).
-  const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
-  const up = await postWebhook(evt("evt_up_" + sub, "customer.subscription.updated", {
-    id: "sub_test123", customer: "cus_test123", status: "active", metadata: { sub }, items: { data: [{ current_period_end: periodEnd }] },
-  }));
-  assert.equal(up.data.applied, true);
-  me = await api("/api/me", { cookie });
-  assert.equal(me.data.account.proUntil, periodEnd * 1000);
-  assert.equal(me.data.account.stripeStatus, "active");
-
-  // Portal needs a customer — Stripe itself isn't configured locally, so 501.
-  assert.equal((await api("/api/billing/portal", { method: "POST", body: {}, cookie })).status, 501);
-
-  // Subscription deleted → back to free immediately.
-  const del = await postWebhook(evt("evt_del_" + sub, "customer.subscription.deleted", { id: "sub_test123", customer: "cus_test123", status: "canceled" }));
-  assert.equal(del.data.applied, true);
-  me = await api("/api/me", { cookie });
-  assert.equal(me.data.account.tier, "free");
-  assert.equal(me.data.account.stripeStatus, "canceled");
-
-  // Unrelated event types are acknowledged but ignored; unknown customers don't crash.
-  const ign = await postWebhook(evt("evt_ign_" + sub, "invoice.paid", { customer: "cus_test123" }));
+  const ign = await postWebhook(evt("evt_ign_" + sub, "customer.created", { id: "cus_test123" }));
   assert.equal(ign.status, 200);
   assert.equal(ign.data.applied, false);
-  const nobody = await postWebhook(evt("evt_nobody_" + sub, "customer.subscription.updated", { id: "sub_x", customer: "cus_nobody", status: "active" }));
-  assert.equal(nobody.data.applied, false);
+  assert.equal(ign.data.reason, "ignored type");
+
+  // A signed snapshot must never grant paid access without fetching canonical
+  // Stripe state. A 503 keeps delivery retryable once billing is configured.
+  const checkout = evt("evt_ck_" + sub, "checkout.session.completed", {
+    id: "cs_test123", mode: "subscription", client_reference_id: sub,
+    customer: "cus_test123", subscription: "sub_test123", payment_status: "paid",
+  });
+  for (const event of [checkout, checkout,
+    evt("evt_up_" + sub, "customer.subscription.updated", { id: "sub_test123", customer: "cus_test123", status: "active", metadata: { sub } }),
+    evt("evt_invoice_" + sub, "invoice.paid", { customer: "cus_test123", subscription: "sub_test123" }),
+  ]) {
+    const result = await postWebhook(event);
+    assert.equal(result.status, 503);
+    assert.match(result.data.error, /reconciliation isn't configured/i);
+  }
+  const me = await api("/api/me", { cookie });
+  assert.equal(me.data.account.tier, "free");
+  assert.equal(me.data.account.proSource, null);
+  assert.equal(me.data.account.hasStripeCustomer, false);
+  assert.equal(me.data.account.stripeCustomer, undefined);
 });
 
 test("admin: deletion on request — an account record, one person on a bill, or a whole bill", async () => {
@@ -724,13 +784,8 @@ test("admin: deletion on request — an account record, one person on a bill, or
   assert.equal(del.data.deleted.email, sub + "@example.com");
   assert.ok(!(await api("/api/admin/users", { cookie: admin })).data.users.some((u) => u.sub === sub), "record is gone");
   assert.equal((await api("/api/admin/accounts/delete", { method: "POST", body: { sub }, cookie: admin })).status, 404);
-  // A live Stripe subscription blocks deletion (cancel in Stripe first).
-  const payer = "payer-" + Date.now();
-  await api("/api/me", { cookie: mintSession({ sub: payer, email: payer + "@example.com" }) });
-  await postWebhook({ id: "evt_del_" + payer, type: "checkout.session.completed", data: { object: { mode: "subscription", client_reference_id: payer, customer: "cus_del", subscription: "sub_del" } } });
-  const blocked = await api("/api/admin/accounts/delete", { method: "POST", body: { email: payer + "@example.com" }, cookie: admin });
-  assert.equal(blocked.status, 409);
-  assert.match(blocked.data.error, /Stripe/);
+  // Subscription-dependent deletion coverage lives in test/billing.mjs,
+  // where canonical Stripe state is provided by an isolated mock.
 
   // Bill: two people join; remove one (live broadcast), then delete the bill (sockets closed, 404 after).
   const { billId } = (await api("/api/bills", { method: "POST", body: SAMPLE, cookie: admin })).data;

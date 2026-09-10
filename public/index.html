@@ -34,6 +34,14 @@
 
   <div class="error-box" id="errorBox"></div>
 
+  <div class="account" id="planSummary">
+    <p class="section-label">Pick up the bill, share the split</p>
+    <p class="hint" style="margin:0;text-align:left"><b>Free</b> · 3 manual bills per calendar month.<br><b>Pro · <span id="planPrice">$2.99 / month</span></b> · unlimited manual bills + <span id="planScans">30</span> receipt scan attempts per calendar month.</p>
+    <p class="hint" style="margin:0;text-align:left">Counts reset on the 1st at midnight UTC, with no rollover. Daily safety caps also apply. Pro renews monthly; cancel any time. <a href="/terms">Plan terms</a></p>
+    <p class="hint" style="margin:0"><b>Friends join, claim items and settle for free — no account or app.</b></p>
+    <hr class="rule">
+  </div>
+
   <div id="authCard" class="hidden">
     <p class="section-label">Sign in to create bills</p>
     <div id="gsiBtn" style="display:flex;justify-content:center;margin:10px 0"></div>
@@ -53,7 +61,7 @@
     </div>
     <div class="acct-row hidden" id="upgradeRow">
       <button class="btn small accent" id="upgradeBtn" type="button">Upgrade</button>
-      <span class="hint" style="margin:0;text-align:left;flex:1" id="upgradeHint">Unlimited bills + receipt scanning · renews monthly, cancel any time · <a href="/terms">terms</a></span>
+      <span class="hint" style="margin:0;text-align:left;flex:1" id="upgradeHint">Unlimited manual bills + 30 scan attempts per calendar month · renews monthly, cancel any time · <a href="/terms">terms</a></span>
     </div>
     <div class="acct-row hidden" id="manageRow">
       <button class="btn small ghost" id="manageBtn" type="button" style="font-size:.7rem;padding:4px 10px">manage subscription</button>
@@ -64,6 +72,7 @@
   <input type="file" id="photoInput" accept="image/*" capture="environment" class="hidden">
   <button class="btn accent" id="scanBtn">📷 &nbsp;Snap / upload receipt photo</button>
   <p class="hint" id="scanHint">AI reads the items — you review and fix before anything is created.</p>
+  <p class="hint hidden" id="scanQuotaNote">An attempt counts when sent for processing, even if the receipt cannot be read. Counts reset on the 1st at midnight UTC; no rollover. Daily safety caps apply. <a href="/terms">Details</a></p>
 
   <hr class="rule">
   <p class="section-label">Bill details <span id="draftNote" class="hidden">— check the scan below</span></p>
@@ -124,18 +133,24 @@ let parseEnabled = true;
 let needAuth = false;
 let user = null;
 let account = null; // tier + usage from /api/me (null when signed out or auth is off)
-let billing = { enabled: false, priceLabel: "$2.99 / month", freeBillsPerMonth: 3 };
+let billing = { enabled: false, priceLabel: "$2.99 / month", freeBillsPerMonth: 3, proScansPerMonth: 30 };
+let scanBusy = false;
 
 const CREATE_LABEL = "Create bill & get share link";
 const SCAN_LABEL = "📷 &nbsp;Snap / upload receipt photo";
 const fmtDate = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 const outOfFreeBills = () => Boolean(account && account.billsLimit !== null && account.billsLeft === 0);
+const outOfScans = () => Boolean(account?.isPro && account.scansLimit !== null && account.scansLeft === 0);
 const canScan = () => !account || account.canScan;
+const scanCapMessage = () => `You've used all ${account?.scansLimit || billing.proScansPerMonth || 30} receipt scan attempts this month. They reset on the 1st at midnight UTC. You can still enter items manually.`;
 
 function refreshGates() {
   const locked = needAuth && !user;
   $("authCard").classList.toggle("hidden", !locked);
   $("whoBar").classList.toggle("hidden", !(needAuth && user));
+  $("planSummary").classList.toggle("hidden", Boolean(account?.isPro));
+  $("planPrice").textContent = billing.priceLabel;
+  $("planScans").textContent = billing.proScansPerMonth || 30;
   if (needAuth && user) $("whoText").textContent = "signed in as " + (user.email || user.name || "you");
 
   // Tier line
@@ -145,10 +160,15 @@ function refreshGates() {
     pill.classList.toggle("pro", account.isPro);
     let text;
     if (account.isPro) {
-      text = "Unlimited bills and receipt scanning";
-      if (account.proSource === "admin-email") text += " · admin";
-      else if (account.proUntil) text += (account.proSource === "stripe" ? " · renews " : " · until ") + fmtDate(account.proUntil);
-      if (account.stripeStatus === "past_due") text = "Payment failed — update your card to keep Pro";
+      text = "Unlimited manual bills";
+      text += account.scansLimit === null ? " · unlimited scan attempts" : ` · ${account.scansLeft} of ${account.scansLimit} scan attempts left this month`;
+      if (account.isAdmin) text += " · admin";
+      else if (account.proSource === "stripe") {
+        const ending = account.stripeCancelAtPeriodEnd || account.stripeCancelAt;
+        const date = ending ? (account.stripeCancelAt || account.proUntil) : account.proUntil;
+        if (date && account.stripeStatus !== "past_due") text += (ending ? " · ends " : " · renews ") + fmtDate(date);
+      } else if (account.proUntil) text += " · until " + fmtDate(account.proUntil);
+      if (account.stripeStatus === "past_due") text += " · payment failed — update your card to keep Pro";
     } else {
       text = `${account.billsLeft} of ${account.billsLimit} free bills left this month · scanning is Pro`;
     }
@@ -170,14 +190,17 @@ function refreshGates() {
   $("createBtn").textContent = outOfFreeBills() ? "Free bills used up — upgrade for unlimited" : CREATE_LABEL;
 
   // Scan button
-  $("scanBtn").disabled = locked || !parseEnabled;
-  $("scanBtn").classList.toggle("locked", !locked && parseEnabled && !canScan());
+  $("scanBtn").disabled = locked || !parseEnabled || scanBusy || outOfScans();
+  $("scanBtn").classList.toggle("locked", !locked && parseEnabled && !canScan() && !account?.isPro);
+  $("scanQuotaNote").classList.toggle("hidden", !account?.isPro);
   if (!parseEnabled) {
     $("scanHint").textContent = "Receipt scanning isn't switched on yet — enter items below.";
   } else if (locked) {
-    $("scanHint").textContent = "Sign in above to scan receipts and create bills.";
+    $("scanHint").textContent = "Sign in to create a free manual bill or upgrade to Pro for receipt scanning.";
+  } else if (outOfScans()) {
+    $("scanHint").textContent = scanCapMessage();
   } else if (!canScan()) {
-    $("scanHint").textContent = "Receipt scanning is a Pro feature — upgrade to snap instead of type.";
+    $("scanHint").textContent = account?.isPro ? "Scanning is unavailable right now — you can still enter items manually." : "Pro includes 30 receipt scan attempts per calendar month — upgrade to snap instead of type.";
   } else {
     $("scanHint").textContent = "AI reads the items — you review and fix before anything is created.";
   }
@@ -203,6 +226,7 @@ async function refreshMe() {
 
 // ---- upgrade / manage ----
 async function startUpgrade() {
+  if (account?.isPro) return showError("You're already on Pro. Use manage subscription for billing changes.");
   if (!billing.enabled) return showError("Pro isn't open for sign-ups yet — check back soon.");
   $("upgradeBtn").disabled = true;
   try {
@@ -236,11 +260,11 @@ async function afterCheckoutReturn() {
   history.replaceState(null, "", location.pathname);
   if (q.get("upgrade") === "cancelled") return showError("No worries — you're still on Free.");
   for (let i = 0; i < 12; i++) {
-    if (account?.isPro) return showToast("You're on Pro — thanks! Unlimited bills and scanning are on.");
+    if (account?.isPro) return showToast("You're on Pro — thanks! Unlimited manual bills and 30 scan attempts per calendar month are included.");
     await new Promise((r) => setTimeout(r, 1500));
     try { await refreshMe(); } catch {}
   }
-  showError("Payment received — Pro should switch on within a minute. Reload if it hasn't.");
+  showError("We're still confirming your subscription. Some payments take longer; reload shortly to check your Pro status.");
 }
 function showToast(msg) {
   const box = $("errorBox");
@@ -371,12 +395,15 @@ try {
 
 // ---- receipt scan ----
 $("scanBtn").onclick = () => {
+  if (outOfScans()) return showError(scanCapMessage());
+  if (account?.isPro && !canScan()) return showError("Scanning is unavailable right now — you can still enter items manually.");
   if (!canScan()) return startUpgrade();
   $("photoInput").click();
 };
 $("photoInput").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
+  scanBusy = true;
   $("scanBtn").disabled = true;
   $("scanBtn").textContent = "Reading receipt…";
   try {
@@ -388,12 +415,15 @@ $("photoInput").addEventListener("change", async (e) => {
     });
     const out = await res.json();
     if (res.status === 401) sessionLost();
-    if (res.status === 402 && out.account) { account = out.account; refreshGates(); }
+    if (out.account) { account = out.account; refreshGates(); }
     if (!res.ok) throw new Error(out.error || "Scan failed");
     applyDraft(out.draft);
   } catch (err) {
     showError(err.message || "Scan failed — enter items manually.");
   } finally {
+    // Attempts can count even if processing fails or the response is lost.
+    if (user) { try { await refreshMe(); } catch {} }
+    scanBusy = false;
     $("scanBtn").innerHTML = SCAN_LABEL;
     refreshGates();
     e.target.value = "";

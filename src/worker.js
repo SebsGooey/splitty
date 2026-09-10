@@ -372,6 +372,7 @@ async function handleGoogleAuth(request, env) {
 // Pro comes from a Stripe subscription, an admin grant, or being listed in
 // ADMIN_EMAILS. Everything lives in the singleton Accounts Durable Object.
 const FREE_BILLS_PER_MONTH = 3;
+const PRO_SCANS_PER_MONTH = 30;
 const FOREVER = 32503680000000; // 2999-12-31 — "no end date" for admin grants
 const PRO_GRACE_MS = 3 * DAY_MS; // slack past a period end while Stripe retries a card
 
@@ -398,7 +399,8 @@ async function entitlementFor(session, env) {
     return {
       tier: isAdmin ? "pro" : "free", isPro: isAdmin, proUntil: null, proSource: isAdmin ? "admin-email" : null,
       billsUsed: 0, billsLimit: isAdmin ? null : FREE_BILLS_PER_MONTH, billsLeft: isAdmin ? null : FREE_BILLS_PER_MONTH,
-      canScan: isAdmin, hasStripeCustomer: false, isAdmin, degraded: true,
+      scansUsed: 0, scansLimit: isAdmin ? null : 0, scansLeft: isAdmin ? null : 0,
+      canScan: false, hasStripeCustomer: false, isAdmin, degraded: true,
     };
   }
 }
@@ -407,7 +409,7 @@ function stripeEnabled(env) {
   return Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_PRICE_ID && env.STRIPE_WEBHOOK_SECRET);
 }
 function billingInfo(env) {
-  return { enabled: stripeEnabled(env), priceLabel: env.PRO_PRICE_LABEL || "$2.99 / month", freeBillsPerMonth: FREE_BILLS_PER_MONTH };
+  return { enabled: stripeEnabled(env), priceLabel: env.PRO_PRICE_LABEL || "$2.99 / month", freeBillsPerMonth: FREE_BILLS_PER_MONTH, proScansPerMonth: PRO_SCANS_PER_MONTH };
 }
 // The Stripe customer id stays server-side; everything else is the person's own.
 function publicAccount(account) {
@@ -644,6 +646,10 @@ async function parseReceipt(request, env) {
   let account = null;
   if (session && authRequired(env)) {
     account = await entitlementFor(session, env);
+    if (account.degraded) return json({ error: "Your scan allowance couldn't be checked. Try again shortly, or enter items manually." }, 503);
+    if (account.isPro && !account.canScan) {
+      return json({ error: "You've used your 30 scan attempts this month. They reset on the 1st (UTC); you can still enter items manually.", scanQuota: true, account: publicAccount(account) }, 429);
+    }
     if (!account.canScan) {
       return json({ error: "Receipt scanning is a Pro feature — upgrade, or type the items in (it's quick).", upgrade: true, account: publicAccount(account) }, 402);
     }
@@ -660,6 +666,7 @@ async function parseReceipt(request, env) {
   } catch {
     return json({ error: "Bad request" }, 400);
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Bad request" }, 400);
   const { media_type, data, turnstileToken } = body;
   if (
     !["image/jpeg", "image/png", "image/webp"].includes(media_type) ||
@@ -679,6 +686,19 @@ async function parseReceipt(request, env) {
   // but BEFORE the actual spend below.
   const meter = await meterCheck(env, request, "parse", session);
   if (!meter.ok) return json({ error: meter.message }, 429);
+
+  // Reserve before upstream spend. The DO checks and increments synchronously,
+  // so concurrent requests cannot exceed the monthly allowance. Invalid photos
+  // and requests rejected by the daily safety meter never consume this quota.
+  if (session && authRequired(env)) {
+    let usage;
+    try {
+      usage = await accountsCall(env, "/consume", { sub: session.sub, email: session.email, name: session.name, kind: "scan", isAdmin: isAdminSession(session, env) });
+    } catch {
+      return json({ error: "Your scan allowance couldn't be checked. Try again shortly, or enter items manually." }, 503);
+    }
+    if (!usage.ok) return json({ error: usage.message, ...(usage.code === "scan_quota" ? { scanQuota: true } : { upgrade: true }), account: publicAccount(usage.entitlement) }, usage.code === "scan_quota" ? 429 : 402);
+  }
 
   // effort is an Opus-5-tier request feature; sending it to e.g.
   // claude-haiku-4-5 is an upstream 400. (No fallbacks param: a refusal on a
@@ -712,13 +732,18 @@ async function parseReceipt(request, env) {
     req.output_config.effort = "medium";
   }
 
-  const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers,
-    body: JSON.stringify(req),
-  });
+  let usageTokens = {};
+  const logScan = (outcome) => console.info(JSON.stringify({ event: "receipt_scan", model, input_tokens: usageTokens.input_tokens ?? null, output_tokens: usageTokens.output_tokens ?? null, outcome }));
+  let apiRes;
+  try {
+    apiRes = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: JSON.stringify(req), signal: AbortSignal.timeout(60_000) });
+  } catch {
+    logScan("upstream_unavailable");
+    return json({ error: "Receipt scanning couldn't finish. Try again or enter items manually." }, 502);
+  }
 
   if (!apiRes.ok) {
+    logScan("upstream_error");
     let detail = "";
     try {
       detail = JSON.parse(await apiRes.text())?.error?.message?.slice(0, 200) || "";
@@ -726,11 +751,16 @@ async function parseReceipt(request, env) {
     console.error("anthropic error", apiRes.status, detail);
     return json({ error: `Receipt scanning failed (upstream ${apiRes.status}${detail ? ": " + detail : ""}). Try again or enter items manually.` }, 502);
   }
-  const msg = await apiRes.json();
+  let msg;
+  try { msg = await apiRes.json(); }
+  catch { logScan("invalid_response"); return json({ error: "Couldn't read that receipt — try again or enter items manually." }, 502); }
+  usageTokens = msg.usage || {};
   if (msg.stop_reason === "refusal") {
+    logScan("refusal");
     return json({ error: "That image couldn't be processed — enter the items manually." }, 422);
   }
   if (msg.stop_reason === "max_tokens") {
+    logScan("max_tokens");
     return json({ error: "That receipt is too long to scan in one go — enter the items manually." }, 422);
   }
   const text = (msg.content || []).find((b) => b.type === "text")?.text;
@@ -738,6 +768,7 @@ async function parseReceipt(request, env) {
   try {
     draft = JSON.parse(text);
   } catch {
+    logScan("invalid_draft");
     return json({ error: "Couldn't read that receipt — try a clearer photo, or enter items manually." }, 422);
   }
 
@@ -746,10 +777,7 @@ async function parseReceipt(request, env) {
   if (Number.isInteger(draft.subtotalCents) && Math.abs(itemSum - draft.subtotalCents) > 1) {
     draft.warnings = [...(draft.warnings || []), `Item prices sum to ${(itemSum / 100).toFixed(2)} but the printed subtotal reads ${(draft.subtotalCents / 100).toFixed(2)} — double-check the items.`];
   }
-  if (session && authRequired(env)) {
-    // Usage bookkeeping only (Pro scans are unlimited); never fail the scan over it.
-    try { await accountsCall(env, "/consume", { sub: session.sub, email: session.email, name: session.name, kind: "scan", isAdmin: isAdminSession(session, env) }); } catch {}
-  }
+  logScan("success");
   return json({ draft });
 }
 
@@ -757,16 +785,31 @@ async function parseReceipt(request, env) {
 // Checkout → webhook → Accounts DO. All three secrets must be present for the
 // upgrade button to do anything; until then it says "coming soon".
 
-async function stripeApi(env, path, form) {
+const STRIPE_API_VERSION = "2026-08-26.dahlia";
+const STRIPE_EVENTS = new Set([
+  "checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed",
+  "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted",
+  "invoice.paid", "invoice.payment_failed", "invoice.payment_action_required", "invoice.voided",
+]);
+const stripeId = (value) => typeof value === "string" ? value : value?.id || null;
+const stripeTerminal = (status) => ["canceled", "incomplete_expired"].includes(status);
+
+async function stripeApi(env, path, form = null, idempotencyKey = null) {
   const res = await fetch("https://api.stripe.com" + path, {
-    method: "POST",
-    headers: { authorization: "Bearer " + env.STRIPE_SECRET_KEY, "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(form).toString(),
+    method: form === null ? "GET" : "POST",
+    headers: {
+      authorization: "Bearer " + env.STRIPE_SECRET_KEY,
+      "Stripe-Version": STRIPE_API_VERSION,
+      ...(form === null ? {} : { "content-type": "application/x-www-form-urlencoded" }),
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
+    ...(form === null ? {} : { body: new URLSearchParams(form).toString() }),
+    signal: AbortSignal.timeout(15_000),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    console.error("stripe error", res.status, data?.error?.message);
-    throw new Error(data?.error?.message || "stripe " + res.status);
+    console.error("stripe request failed", res.status, data?.error?.code || "api_error");
+    throw new Error("Stripe request failed: " + res.status);
   }
   return data;
 }
@@ -775,26 +818,12 @@ async function billingCheckout(request, env, url) {
   if (!stripeEnabled(env)) return json({ error: "Upgrades aren't switched on yet." }, 501);
   const session = await getSession(request, env);
   if (!session) return json({ error: "Sign in first." }, 401);
-  const account = await entitlementFor(session, env);
-  if (account.isPro && account.proSource !== "stripe") {
-    return json({ error: "You already have Pro." }, 409);
-  }
-  const form = {
-    mode: "subscription",
-    "line_items[0][price]": env.STRIPE_PRICE_ID,
-    "line_items[0][quantity]": "1",
-    success_url: url.origin + "/?upgraded=1",
-    cancel_url: url.origin + "/?upgrade=cancelled",
-    client_reference_id: session.sub,
-    "metadata[sub]": session.sub,
-    "subscription_data[metadata][sub]": session.sub,
-    allow_promotion_codes: "true",
-  };
-  if (account.stripeCustomer) form.customer = account.stripeCustomer;
-  else if (session.email) form.customer_email = session.email;
   try {
-    const checkout = await stripeApi(env, "/v1/checkout/sessions", form);
-    return json({ url: checkout.url });
+    // Account lookup and Stripe mutations share the per-account serializer.
+    // Never use the degraded/free entitlement fallback to start a purchase.
+    return await accountsStub(env).fetch("https://do/checkout", {
+      method: "POST", body: JSON.stringify({ ...session, isAdmin: isAdminSession(session, env), origin: env.CANONICAL_HOST ? "https://" + env.CANONICAL_HOST : url.origin }),
+    });
   } catch {
     return json({ error: "Couldn't start checkout — try again in a minute." }, 502);
   }
@@ -805,9 +834,14 @@ async function billingPortal(request, env, url) {
   const session = await getSession(request, env);
   if (!session) return json({ error: "Sign in first." }, 401);
   const account = await entitlementFor(session, env);
+  if (account.degraded) return json({ error: "Billing is temporarily unavailable. Please try again shortly." }, 503);
   if (!account.stripeCustomer) return json({ error: "No subscription to manage on this account." }, 404);
   try {
-    const portal = await stripeApi(env, "/v1/billing_portal/sessions", { customer: account.stripeCustomer, return_url: url.origin + "/" });
+    const portal = await stripeApi(env, "/v1/billing_portal/sessions", {
+      customer: account.stripeCustomer,
+      return_url: (env.CANONICAL_HOST ? "https://" + env.CANONICAL_HOST : url.origin) + "/",
+      ...(env.STRIPE_PORTAL_CONFIGURATION_ID ? { configuration: env.STRIPE_PORTAL_CONFIGURATION_ID } : {}),
+    });
     return json({ url: portal.url });
   } catch {
     return json({ error: "Couldn't open the billing portal — try again in a minute." }, 502);
@@ -853,6 +887,8 @@ async function stripeWebhook(request, env) {
     return json({ error: "Bad payload" }, 400);
   }
   if (!event || typeof event.id !== "string" || typeof event.type !== "string") return json({ error: "Bad event" }, 400);
+  if (!STRIPE_EVENTS.has(event.type)) return json({ received: true, applied: false, reason: "ignored type" });
+  if (!stripeEnabled(env)) return json({ error: "Billing reconciliation isn't configured." }, 503);
   try {
     const result = await accountsCall(env, "/stripe", { event });
     return json({ received: true, ...result });
@@ -1020,8 +1056,10 @@ export class Meter {
 const monthKey = (ms) => new Date(ms).toISOString().slice(0, 7); // "2026-09" (UTC)
 
 export class Accounts {
-  constructor(ctx) {
+  constructor(ctx, env) {
     this.ctx = ctx;
+    this.env = env;
+    this.billingLocks = new Map();
     this.sql = ctx.storage.sql;
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -1044,6 +1082,18 @@ export class Accounts {
       CREATE INDEX IF NOT EXISTS users_email ON users(email);
       CREATE INDEX IF NOT EXISTS users_customer ON users(stripe_customer);
       CREATE TABLE IF NOT EXISTS stripe_events (id TEXT PRIMARY KEY, type TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS billing_state (
+        sub TEXT PRIMARY KEY,
+        customer_key TEXT,
+        customer_started_at INTEGER,
+        customer_request TEXT,
+        checkout_key TEXT,
+        checkout_started_at INTEGER,
+        checkout_request TEXT,
+        checkout_id TEXT,
+        cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+        cancel_at INTEGER
+      );
     `);
   }
 
@@ -1081,8 +1131,9 @@ export class Accounts {
   entitlement(row, isAdmin, now) {
     // Grace past the period end only while Stripe still considers the
     // subscription alive (card retries); a cancellation ends Pro at once.
-    const grace = ["active", "trialing", "past_due"].includes(row.stripe_status) ? PRO_GRACE_MS : 0;
-    const stripeActive = row.pro_source === "stripe" && row.pro_until && row.pro_until + grace > now;
+    const billing = this.one("SELECT cancel_at_period_end, cancel_at FROM billing_state WHERE sub = ?", row.sub);
+    const grace = ["active", "trialing", "past_due"].includes(row.stripe_status) && !billing?.cancel_at_period_end && !billing?.cancel_at ? PRO_GRACE_MS : 0;
+    const stripeActive = row.pro_source === "stripe" && ["active", "trialing", "past_due"].includes(row.stripe_status) && row.pro_until && row.pro_until + grace > now && (!billing?.cancel_at || billing.cancel_at > now);
     const granted = row.pro_source === "admin" && row.pro_until && row.pro_until > now;
     const isPro = Boolean(isAdmin || stripeActive || granted);
     const source = isAdmin ? "admin-email" : stripeActive ? "stripe" : granted ? "admin" : null;
@@ -1092,10 +1143,15 @@ export class Accounts {
       proUntil: isPro && !isAdmin && row.pro_until && row.pro_until < FOREVER ? row.pro_until : null,
       proSource: source,
       stripeStatus: row.stripe_status || null,
+      stripeCancelAtPeriodEnd: Boolean(billing?.cancel_at_period_end),
+      stripeCancelAt: billing?.cancel_at || null,
       billsUsed: row.bills_month,
       billsLimit: isPro ? null : FREE_BILLS_PER_MONTH,
       billsLeft: isPro ? null : Math.max(0, FREE_BILLS_PER_MONTH - row.bills_month),
-      canScan: isPro,
+      scansUsed: row.scans_month,
+      scansLimit: isAdmin ? null : isPro ? PRO_SCANS_PER_MONTH : 0,
+      scansLeft: isAdmin ? null : isPro ? Math.max(0, PRO_SCANS_PER_MONTH - row.scans_month) : 0,
+      canScan: isPro && (isAdmin || row.scans_month < PRO_SCANS_PER_MONTH),
       hasStripeCustomer: Boolean(row.stripe_customer),
       stripeCustomer: row.stripe_customer || null, // stripped before it reaches a browser
       isAdmin: Boolean(isAdmin),
@@ -1130,7 +1186,8 @@ export class Accounts {
         }
         this.sql.exec("UPDATE users SET bills_month = bills_month + 1, bills_total = bills_total + 1 WHERE sub = ?", body.sub);
       } else if (body.kind === "scan") {
-        if (!ent.canScan) return json({ ok: false, code: "pro", message: "Receipt scanning is a Pro feature.", entitlement: ent });
+        if (!ent.isPro) return json({ ok: false, code: "pro", message: "Receipt scanning is a Pro feature.", entitlement: ent });
+        if (!ent.canScan) return json({ ok: false, code: "scan_quota", message: "You've used your 30 scan attempts this month. They reset on the 1st (UTC); you can still enter items manually.", entitlement: ent });
         this.sql.exec("UPDATE users SET scans_month = scans_month + 1, scans_total = scans_total + 1 WHERE sub = ?", body.sub);
       } else {
         return json({ error: "bad kind" }, 400);
@@ -1157,7 +1214,12 @@ export class Accounts {
     }
 
     if (url.pathname === "/stripe") {
-      return json(this.applyStripeEvent(body.event, now));
+      return json(await this.applyStripeEvent(body.event));
+    }
+
+    if (url.pathname === "/checkout") {
+      if (typeof body.sub !== "string" || !body.sub) return json({ error: "sub required" }, 400);
+      return this.withBillingLock(body.sub, () => this.checkout(body));
     }
 
     if (url.pathname === "/delete") {
@@ -1167,11 +1229,28 @@ export class Accounts {
       let row = body.sub ? this.one("SELECT * FROM users WHERE sub = ?", body.sub) : null;
       if (!row && body.email) row = this.one("SELECT * FROM users WHERE email = ? ORDER BY last_seen DESC LIMIT 1", body.email);
       if (!row) return json({ ok: false, error: "No such account." });
-      if (row.stripe_subscription && !["canceled", "incomplete_expired"].includes(row.stripe_status)) {
-        return json({ ok: false, error: "This account has a Stripe subscription that isn't cancelled — cancel it in Stripe first." });
-      }
-      this.sql.exec("DELETE FROM users WHERE sub = ?", row.sub);
-      return json({ ok: true, deleted: this.publicRow(row, now) });
+      return this.withBillingLock(row.sub, async () => {
+        row = this.one("SELECT * FROM users WHERE sub = ?", row.sub);
+        if (!row) return json({ ok: false, error: "No such account." });
+        if (row.stripe_customer) {
+          if (!stripeEnabled(this.env)) return json({ ok: false, error: "Billing must be available before deleting a customer account." });
+          const { subscriptions } = await this.reconcileCustomer(row, row.stripe_customer);
+          if (subscriptions.some((subscription) => !stripeTerminal(subscription.status))) return json({ ok: false, error: "This account has a Stripe subscription that isn't cancelled — cancel it in Stripe first." });
+          const state = this.billingState(row.sub);
+          if (state.checkout_key && !state.checkout_id) return json({ ok: false, error: "An earlier checkout must be resolved before deleting this account." });
+          if (state.checkout_id) {
+            const checkout = await stripeApi(this.env, "/v1/checkout/sessions/" + encodeURIComponent(state.checkout_id));
+            if (checkout.status === "open") return json({ ok: false, error: "A checkout is still open. Expire it in Stripe before deleting this account." });
+            if (checkout.status === "complete" && !subscriptions.some((subscription) => subscription.id === stripeId(checkout.subscription) && stripeTerminal(subscription.status))) return json({ ok: false, error: "Checkout is being confirmed. Please wait before deleting this account." });
+          }
+        }
+        const deleted = this.publicRow(this.one("SELECT * FROM users WHERE sub = ?", row.sub), now);
+        this.ctx.storage.transactionSync(() => {
+          this.sql.exec("DELETE FROM users WHERE sub = ?", row.sub);
+          this.sql.exec("DELETE FROM billing_state WHERE sub = ?", row.sub);
+        });
+        return json({ ok: true, deleted });
+      });
     }
 
     if (url.pathname === "/users") {
@@ -1193,66 +1272,195 @@ export class Accounts {
     };
   }
 
-  // Idempotent: each Stripe event id is applied once. Users are matched by the
-  // sub we stamped into metadata / client_reference_id, then by customer id,
-  // then by verified email as a last resort.
-  applyStripeEvent(event, now) {
-    if (!event || typeof event.id !== "string") return { applied: false, reason: "bad event" };
-    if (this.one("SELECT id FROM stripe_events WHERE id = ?", event.id)) return { applied: false, reason: "duplicate" };
-    this.sql.exec("INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)", event.id, String(event.type).slice(0, 80), now);
-    // Keep the idempotency table bounded.
-    this.sql.exec("DELETE FROM stripe_events WHERE created_at < ?", now - 30 * DAY_MS);
-
-    const obj = event.data?.object || {};
-    const find = ({ sub, customer, subscription, email }) => {
-      let row = null;
-      if (sub) row = this.one("SELECT * FROM users WHERE sub = ?", sub);
-      if (!row && customer) row = this.one("SELECT * FROM users WHERE stripe_customer = ? ORDER BY last_seen DESC LIMIT 1", customer);
-      if (!row && subscription) row = this.one("SELECT * FROM users WHERE stripe_subscription = ? LIMIT 1", subscription);
-      if (!row && email) row = this.one("SELECT * FROM users WHERE email = ? ORDER BY last_seen DESC LIMIT 1", String(email).toLowerCase());
-      return row;
-    };
-
-    switch (event.type) {
-      case "checkout.session.completed": {
-        if (obj.mode && obj.mode !== "subscription") return { applied: false, reason: "not a subscription" };
-        const sub = obj.client_reference_id || obj.metadata?.sub || null;
-        const customer = typeof obj.customer === "string" ? obj.customer : obj.customer?.id;
-        const subscription = typeof obj.subscription === "string" ? obj.subscription : obj.subscription?.id;
-        const email = obj.customer_details?.email || obj.customer_email;
-        const row = find({ sub, customer, subscription, email });
-        if (!row) return { applied: false, reason: "no matching user" };
-        // Provisional Pro until the subscription event carries the real period end.
-        const provisional = Math.max(row.pro_source === "stripe" ? row.pro_until || 0 : 0, now + 35 * DAY_MS);
-        this.sql.exec(
-          "UPDATE users SET stripe_customer = COALESCE(?, stripe_customer), stripe_subscription = COALESCE(?, stripe_subscription), stripe_status = 'active', pro_source = 'stripe', pro_until = ? WHERE sub = ?",
-          customer || null, subscription || null, provisional, row.sub,
-        );
-        return { applied: true, sub: row.sub };
-      }
-      case "customer.subscription.created":
-      case "customer.subscription.updated":
-      case "customer.subscription.deleted": {
-        const sub = obj.metadata?.sub || null;
-        const customer = typeof obj.customer === "string" ? obj.customer : obj.customer?.id;
-        const row = find({ sub, customer, subscription: obj.id });
-        if (!row) return { applied: false, reason: "no matching user" };
-        const status = String(obj.status || (event.type.endsWith("deleted") ? "canceled" : ""));
-        // current_period_end moved onto subscription items in newer Stripe API versions.
-        const periodEndSec = obj.current_period_end ?? obj.items?.data?.[0]?.current_period_end;
-        const periodEnd = Number.isFinite(periodEndSec) ? periodEndSec * 1000 : now + 35 * DAY_MS;
-        const keeps = ["active", "trialing", "past_due"].includes(status);
-        const proUntil = event.type.endsWith("deleted") || !keeps ? Math.min(now - 1, row.pro_until || now) : periodEnd;
-        this.sql.exec(
-          "UPDATE users SET stripe_customer = COALESCE(?, stripe_customer), stripe_subscription = ?, stripe_status = ?, pro_source = 'stripe', pro_until = ? WHERE sub = ?",
-          customer || null, obj.id || row.stripe_subscription, status, proUntil, row.sub,
-        );
-        return { applied: true, sub: row.sub, status };
-      }
-      default:
-        return { applied: false, reason: "ignored type" };
+  // Only billing work for the same account waits. Reads and other accounts
+  // continue while Stripe responds. The durable attempt records below make a
+  // restart safe even though these in-flight locks are intentionally in memory.
+  async withBillingLock(sub, fn) {
+    const previous = this.billingLocks.get(sub) || Promise.resolve();
+    let release;
+    const done = new Promise((resolve) => { release = resolve; });
+    this.billingLocks.set(sub, done);
+    await previous;
+    try { return await fn(); }
+    finally {
+      release();
+      if (this.billingLocks.get(sub) === done) this.billingLocks.delete(sub);
     }
   }
+
+  billingState(sub) {
+    this.sql.exec("INSERT OR IGNORE INTO billing_state (sub) VALUES (?)", sub);
+    return this.one("SELECT * FROM billing_state WHERE sub = ?", sub);
+  }
+
+  matchesPro(subscription) {
+    return subscription.items?.data?.some((item) =>
+      item.price?.id === this.env.STRIPE_PRICE_ID ||
+      (this.env.STRIPE_PRODUCT_ID && stripeId(item.price?.product) === this.env.STRIPE_PRODUCT_ID));
+  }
+
+  async listStripe(path, params) {
+    const items = [];
+    // Protect a request from an unexpectedly huge/shared Stripe customer.
+    for (let page = 0; page < 20; page++) {
+      const query = new URLSearchParams({ ...params, limit: "100", ...(items.length ? { starting_after: items.at(-1).id } : {}) });
+      const result = await stripeApi(this.env, path + "?" + query);
+      if (!Array.isArray(result.data)) throw new Error("Invalid Stripe list");
+      items.push(...result.data);
+      if (!result.has_more) return items;
+      if (!result.data.length) break;
+    }
+    throw new Error("Stripe list exceeded safe request limit");
+  }
+
+  async paidThrough(subscription) {
+    // A subscription's current_period_end also advances when a renewal FAILS.
+    // Only a paid recurring invoice establishes a new paid-through date.
+    const invoices = await this.listStripe("/v1/invoices", { subscription: subscription.id, status: "paid" });
+    const prices = new Set(subscription.items.data.map((item) => item.price?.id).filter(Boolean));
+    let until = 0;
+    for (const invoice of invoices) {
+      if (invoice.status !== "paid") continue;
+      const lines = invoice.lines?.has_more
+        ? await this.listStripe("/v1/invoices/" + encodeURIComponent(invoice.id) + "/lines", {})
+        : invoice.lines?.data || [];
+      for (const line of lines) {
+        const price = stripeId(line.pricing?.price_details?.price) || stripeId(line.price);
+        const item = line.parent?.subscription_item_details;
+        const recurring = item || line.type === "subscription" || line.subscription_item;
+        const end = line.period?.end;
+        if (recurring && prices.has(price) && Number.isFinite(end) && (line.amount ?? 0) >= 0) {
+          until = Math.max(until, end * 1000);
+        }
+      }
+    }
+    return until;
+  }
+
+  async reconcileCustomer(row, customer) {
+    const subscriptions = (await this.listStripe("/v1/subscriptions", { customer, status: "all" }))
+      .filter((subscription) => this.matchesPro(subscription) && (!subscription.metadata?.sub || subscription.metadata.sub === row.sub));
+    const rank = (subscription) => ({ active: 6, trialing: 5, past_due: 4, unpaid: 3, paused: 2, incomplete: 1 }[subscription.status] || 0);
+    subscriptions.sort((a, b) => rank(b) - rank(a) || (b.created || 0) - (a.created || 0));
+    const subscription = subscriptions[0];
+    if (!subscription) return { subscription: null, subscriptions };
+    const now = Date.now();
+    const status = subscription.status;
+    let until = 0;
+    if (status === "trialing") until = Number(subscription.trial_end) * 1000 || 0;
+    else if (["active", "past_due"].includes(status)) until = await this.paidThrough(subscription);
+    // Explicit cancellation never receives payment-retry grace.
+    const cancelAt = Number(subscription.cancel_at) * 1000 ||
+      (subscription.cancel_at_period_end ? Number(subscription.items?.data?.[0]?.current_period_end || subscription.current_period_end) * 1000 : 0);
+    if (cancelAt) until = Math.min(until, cancelAt);
+    this.billingState(row.sub);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        "UPDATE users SET stripe_customer = ?, stripe_subscription = ?, stripe_status = ?, pro_source = CASE WHEN pro_source = 'admin' AND pro_until > ? THEN pro_source ELSE 'stripe' END, pro_until = CASE WHEN pro_source = 'admin' AND pro_until > ? THEN pro_until ELSE ? END WHERE sub = ?",
+        customer, subscription.id, status, now, now, until || null, row.sub,
+      );
+      this.sql.exec("UPDATE billing_state SET cancel_at_period_end = ?, cancel_at = ? WHERE sub = ?", subscription.cancel_at_period_end ? 1 : 0, cancelAt || null, row.sub);
+    });
+    return { subscription, subscriptions };
+  }
+
+  async checkout(body) {
+    if (!stripeEnabled(this.env)) return json({ error: "Upgrades aren't switched on yet." }, 501);
+    const now = Date.now();
+    let row = this.touch(body.sub, body.email, body.name, now);
+    const account = this.entitlement(row, body.isAdmin, now);
+    if (account.isPro && account.proSource !== "stripe") return json({ error: "You already have Pro." }, 409);
+    let state = this.billingState(row.sub);
+    if (!row.stripe_customer) {
+      if (!state.customer_key) {
+        const form = { "metadata[sub]": row.sub, "metadata[app]": "splitty", ...(row.email ? { email: row.email } : {}) };
+        this.sql.exec("UPDATE billing_state SET customer_key = ?, customer_started_at = ?, customer_request = ? WHERE sub = ?", "splitty-customer-" + crypto.randomUUID(), now, JSON.stringify(form), row.sub);
+        state = this.billingState(row.sub);
+      }
+      // Stripe may discard idempotency keys after 24h. An ambiguous old attempt
+      // needs investigation rather than silently creating a second customer.
+      if (now - state.customer_started_at > 23 * 60 * 60 * 1000) return json({ error: "Billing setup needs a check. Please contact hello@splitty.cc." }, 409);
+      const customer = await stripeApi(this.env, "/v1/customers", JSON.parse(state.customer_request), state.customer_key);
+      if (!customer.id) throw new Error("Stripe customer missing");
+      this.sql.exec("UPDATE users SET stripe_customer = ? WHERE sub = ?", customer.id, row.sub);
+      row = this.one("SELECT * FROM users WHERE sub = ?", row.sub);
+    }
+    // Fetch current Stripe state before every purchase, even if no webhook has
+    // arrived or an earlier webhook delivery failed.
+    const { subscriptions } = await this.reconcileCustomer(row, row.stripe_customer);
+    if (subscriptions.some((subscription) => !stripeTerminal(subscription.status))) {
+      return json({ error: "You already have a subscription. Use manage subscription to update your payment or cancel.", manage: true }, 409);
+    }
+    if (state.checkout_id) {
+      const pending = await stripeApi(this.env, "/v1/checkout/sessions/" + encodeURIComponent(state.checkout_id));
+      if (pending.status === "open" && pending.url && pending.expires_at * 1000 > now) return json({ url: pending.url });
+      const ended = pending.status === "complete" && subscriptions.some((subscription) => subscription.id === stripeId(pending.subscription) && stripeTerminal(subscription.status));
+      if (pending.status !== "expired" && !ended) return json({ error: "Your checkout is being confirmed. Refresh or manage your subscription before trying again." }, 409);
+      this.sql.exec("UPDATE billing_state SET checkout_key = NULL, checkout_started_at = NULL, checkout_request = NULL, checkout_id = NULL WHERE sub = ?", row.sub);
+      state = this.billingState(row.sub);
+    }
+    if (!state.checkout_key) {
+      const suffix = Array.from(crypto.getRandomValues(new Uint8Array(8)), (value) => String.fromCharCode(97 + value % 26)).join("");
+      const form = {
+        mode: "subscription", customer: row.stripe_customer,
+        "line_items[0][price]": this.env.STRIPE_PRICE_ID, "line_items[0][quantity]": "1",
+        success_url: body.origin + "/?upgraded=1", cancel_url: body.origin + "/?upgrade=cancelled",
+        client_reference_id: row.sub, "metadata[sub]": row.sub, "metadata[app]": "splitty",
+        "subscription_data[metadata][sub]": row.sub, "subscription_data[metadata][app]": "splitty",
+        "custom_text[submit][message]": "By subscribing you agree to Splitty's [Terms of Service](" + body.origin + "/terms), including monthly renewal until canceled. Manage or cancel your subscription in Splitty.",
+        ...(this.env.STRIPE_REQUIRE_TERMS_CONSENT === "1" ? {
+          "consent_collection[terms_of_service]": "required",
+          "custom_text[terms_of_service_acceptance][message]": "I agree to Splitty's [Terms of Service](" + body.origin + "/terms).",
+        } : {}),
+        integration_identifier: "splitty-pro-" + suffix,
+        expires_at: String(Math.floor(now / 1000) + 3600),
+        allow_promotion_codes: "true",
+      };
+      this.sql.exec("UPDATE billing_state SET checkout_key = ?, checkout_started_at = ?, checkout_request = ? WHERE sub = ?", "splitty-checkout-" + crypto.randomUUID(), now, JSON.stringify(form), row.sub);
+      state = this.billingState(row.sub);
+    }
+    if (now - state.checkout_started_at > 23 * 60 * 60 * 1000) return json({ error: "An earlier checkout needs a check. Please contact hello@splitty.cc before trying again." }, 409);
+    const checkout = await stripeApi(this.env, "/v1/checkout/sessions", JSON.parse(state.checkout_request), state.checkout_key);
+    if (!checkout.id || !checkout.url) throw new Error("Stripe checkout missing");
+    this.sql.exec("UPDATE billing_state SET checkout_id = ? WHERE sub = ?", checkout.id, row.sub);
+    return json({ url: checkout.url });
+  }
+
+  async applyStripeEvent(event) {
+    if (!event || typeof event.id !== "string" || !STRIPE_EVENTS.has(event.type)) return { applied: false, reason: "ignored type" };
+    const obj = event.data?.object || {};
+    const customer = stripeId(obj.customer);
+    const sub = obj.client_reference_id || obj.metadata?.sub || obj.parent?.subscription_details?.metadata?.sub;
+    const subscriptionId = event.type.startsWith("customer.subscription.") ? obj.id
+      : stripeId(obj.subscription) || stripeId(obj.parent?.subscription_details?.subscription);
+    let row = sub ? this.one("SELECT * FROM users WHERE sub = ?", sub) : null;
+    if (!row && customer) row = this.one("SELECT * FROM users WHERE stripe_customer = ?", customer);
+    if (!row && subscriptionId) row = this.one("SELECT * FROM users WHERE stripe_subscription = ?", subscriptionId);
+    if (!row || !subscriptionId) return { applied: false, reason: "no matching subscription" };
+    return this.withBillingLock(row.sub, async () => {
+      if (this.one("SELECT id FROM stripe_events WHERE id = ?", event.id)) return { applied: false, reason: "duplicate" };
+      row = this.one("SELECT * FROM users WHERE sub = ?", row.sub);
+      if (!row) return { applied: false, reason: "no matching user" };
+      // The event is a notification, never a state snapshot to apply. Fetch
+      // inside the same account lock as reconciliation so stale/same-second
+      // deliveries cannot race a newer update or resurrect a cancellation.
+      const subscription = await stripeApi(this.env, "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
+      const actualCustomer = stripeId(subscription.customer);
+      if (!this.matchesPro(subscription) || !actualCustomer ||
+          (row.stripe_customer && row.stripe_customer !== actualCustomer) ||
+          (subscription.metadata?.sub && subscription.metadata.sub !== row.sub)) {
+        return { applied: false, reason: "unrelated subscription" };
+      }
+      const result = await this.reconcileCustomer(row, actualCustomer);
+      // Record only after successful reconciliation. API/storage failure must
+      // leave the event retryable, including a response lost after applying it.
+      const now = Date.now();
+      this.sql.exec("INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)", event.id, event.type, now);
+      this.sql.exec("DELETE FROM stripe_events WHERE created_at < ?", now - 30 * DAY_MS);
+      return { applied: Boolean(result.subscription), sub: row.sub, status: result.subscription?.status || null };
+    });
+  }
+
 }
 
 // ---------- BillRoom DO: one per bill ----------

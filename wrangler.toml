@@ -2,16 +2,15 @@ name = "splitty"
 main = "src/worker.js"
 compatibility_date = "2026-08-01"
 
+# Keep dashboard variables across deploys. This must be a top-level field.
+keep_vars = true
+
 [assets]
 directory = "public"
 binding = "ASSETS"
 # Run the Worker before the asset layer so the canonical-host redirect (and any
 # future per-request logic) applies to page loads too, not just to /api and /b.
 run_worker_first = true
-
-# Dashboard-set variables survive deploys (ADMIN_EMAILS, STRIPE_PRICE_ID, PRO_PRICE_LABEL
-# can live there instead of in this public file). Secrets always survive.
-keep_vars = true
 
 # Plain-text config (secrets are set with `wrangler secret put`, never here).
 # GOOGLE_CLIENT_ID is public by design; with the SESSION_SECRET secret present
@@ -20,6 +19,10 @@ keep_vars = true
 GOOGLE_CLIENT_ID = "572976983973-uuue8q3u19inauo1q1n9osvjfrgk5miq.apps.googleusercontent.com"
 # Page loads on *.workers.dev and www. redirect here (API calls are not redirected).
 CANONICAL_HOST = "splitty.cc"
+STRIPE_PRODUCT_ID = "splitty_pro"
+STRIPE_PRICE_ID = "price_1UDyEjAFXh9zNtLQBeho5jk1"
+STRIPE_PORTAL_CONFIGURATION_ID = "bpc_1UDyYmAFXh9zNtLQwli28ae0"
+PRO_PRICE_LABEL = "$2.99 / month"
 # PARSE_MODEL = "claude-opus-5"        # or "claude-haiku-4-5" for the cheap toggle
 # TURNSTILE_SITE_KEY = "..."           # server half only — the create page has no widget yet (README → Cost control)
 #
@@ -27,7 +30,9 @@ CANONICAL_HOST = "splitty.cc"
 #   ADMIN_EMAILS          comma-separated Google emails that get Pro + the /admin page
 #   PRO_PRICE_LABEL       shown on the upgrade button, default "$2.99 / month"
 #   STRIPE_PRICE_ID       price_… for the Pro subscription
-#   STRIPE_SECRET_KEY     (secret) sk_live_… / sk_test_…
+#   STRIPE_PRODUCT_ID     the Splitty Pro product (never another app's product)
+#   STRIPE_PORTAL_CONFIGURATION_ID  Splitty's dedicated customer portal
+#   STRIPE_SECRET_KEY     (secret) restricted rk_live_… / rk_test_… key
 #   STRIPE_WEBHOOK_SECRET (secret) whsec_… for the /api/stripe/webhook endpoint
 # The upgrade button stays "coming soon" until all three STRIPE_* values exist.
 

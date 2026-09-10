@@ -33,7 +33,7 @@
   <hr class="rule">
 
   <section class="legal">
-<p class="meta">Effective September 6, 2026</p>
+<p class="meta">Effective September 10, 2026 (UTC)</p>
 
 <h2>1. Who we are, and agreeing to these terms</h2>
 <p>Splitty (<a href="/">splitty.cc</a>) is a small tool for splitting a bill with friends, run by <b>Indranet Technologies</b> ("we", "us"). These terms are the deal between you and us. We've kept them short and in plain English; if anything is unclear, email <a href="mailto:hello@splitty.cc">hello@splitty.cc</a>.</p>
@@ -72,7 +72,7 @@
 <h2>5. Signing in and your account</h2>
 <ul>
 <li>You need to sign in with Google to <b>create</b> a bill or <b>scan</b> a receipt. Joining or settling a bill someone else made never needs an account.</li>
-<li>From Google's sign-in token we keep only your Google account id, your name, and your email if Google confirms it's verified. We use them to recognize you, count your free bills, decide whether you're Pro or an admin, tie a Stripe subscription to you, and send the account notices described in the <a href="/privacy">Privacy Policy</a>. Splitty's use and transfer to any other app of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements.</li>
+<li>From Google's sign-in token we keep only your Google account id, your name, and your email if Google confirms it's verified. We use them to recognize you, count your bill and scan attempts, decide whether you're Pro or an admin, tie a Stripe subscription to you, and send the account notices described in the <a href="/privacy">Privacy Policy</a>. Splitty's use and transfer to any other app of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements.</li>
 <li>A sign-in lasts 30 days on that browser, regardless of use. Signing out removes the sign-in cookie from that browser, but can't cancel a copy of it. So use your own Google account, keep it secure, and sign out on shared devices. Bills, scans and purchases made while signed in as you count as yours. If you think your sign-in has been misused, sign out there, secure your Google account, and tell us. The only thing we can do on our side is reset sign-in for everyone.</li>
 <li>Your account record holds your Google account id, email and name, when it was created and last used, your usage counts, your Pro status and where it came from, and, if you've bought Pro, your Stripe customer and subscription ids and status. Our admins can see that list to run the service and grant or revoke Pro. The <a href="/privacy">Privacy Policy</a> has the details.</li>
 <li>Bills are not linked to your account. We can't list your bills, find a bill by your email, or recover a lost link. If you need help with a bill, send us its link.</li>
@@ -82,15 +82,16 @@
 <h2>6. Free, Pro and limits</h2>
 <table>
 <tr><th></th><th>Free</th><th>Pro</th></tr>
-<tr><td>Bills you can create</td><td>3 per calendar month</td><td>unlimited</td></tr>
-<tr><td>Receipt scanning</td><td>not included</td><td>included</td></tr>
-<tr><td>Joining bills</td><td>unlimited, no account</td><td>unlimited, no account</td></tr>
+<tr><td>Manual bills you can create</td><td>3 per calendar month</td><td>unlimited, subject to daily caps</td></tr>
+<tr><td>Receipt scanning</td><td>not included</td><td>30 scan attempts per calendar month, subject to daily caps</td></tr>
+<tr><td>Joining, claiming and settling bills</td><td>free, no account</td><td>free, no account</td></tr>
 <tr><td>Price</td><td>free</td><td>US$2.99 a month</td></tr>
 </table>
-<p>"Month" means the calendar month in UTC, so the free count resets on the 1st, UTC time. Your free-bill count is taken when you press Create; in the rare case the bill then fails to save, it isn't given back. On top of the tiers, Splitty has <b>daily caps</b> on bill creation and scanning to keep costs sane. They apply to Pro too, count per account and per network address (so everyone sharing an office Wi-Fi or a mobile carrier's address shares that count), and there is also a single site-wide daily cap on each of scanning and bill creation, so on a busy day you can hit a cap because of other people's use. All of them reset at midnight UTC, and can tick on an attempt that fails. Hitting a cap means waiting, not losing anything. The tiers and caps may change; we'll update this page and, for changes that matter, give the notice in section 20.</p>
+<p><b>Calendar-month allowances.</b> Free includes 3 manual bills and Pro includes 30 receipt scan attempts per calendar month. Both counts reset on the 1st at midnight UTC, independently of your subscription renewal date. Unused allowances do not roll over. An attempt counts when a validated receipt is sent for processing, even if processing fails or the draft cannot be read. Requests rejected before processing because of sign-in, validation or a daily cap do not use a monthly scan attempt. Reaching your scan allowance leaves manual bill creation available on Pro; it does not require another subscription. Your free-bill count is taken after validation when you press Create; in the rare case the bill then fails to save, it isn't given back.</p>
+<p><b>Daily safety caps.</b> Creation is limited to 30 bills per account and per network address each day, and 300 across the site. Scanning is limited to 10 attempts per account and per network address each day, and 50 across the site. These caps apply to Pro too. Everyone sharing an office Wi-Fi or a mobile carrier's public address shares that address's count, and a busy site can reach its cap because of other people's use. Daily counts reset at midnight UTC and can include attempts that fail after validation. If a daily creation cap is reached, creation must wait until the reset; a scan cap alone does not stop manual entry. The tiers and caps may change; we'll update this page and, for changes that matter, give the notice in section 20.</p>
 
 <h2>7. Paying for Pro</h2>
-<p><b>In short:</b> Pro is US$2.99 a month. Your card is charged when you subscribe and then automatically every month until you cancel. There's no minimum term. The details:</p>
+<p>Pro is US$2.99 a month. Your card is charged when you subscribe and then automatically every month until you cancel. There's no minimum term. Only the monthly plan is offered at launch; there is no annual or lifetime plan.</p>
 <ul>
 <li><b>Price and renewal.</b> Pro costs <b>US$2.99 per month</b>, in US dollars. By subscribing you authorize us, through Stripe, to charge your payment method <b>every month until you cancel</b>, at the start of each new billing period.</li>
 <li><b>Billing by Stripe.</b> When you upgrade you're sent to Stripe's checkout, which shows the price and that it renews monthly; you aren't charged until you confirm there. Pressing Upgrade and completing checkout is your agreement to these terms, including the monthly renewal and the cancellation and refund rules in this section. Stripe collects and stores your card details; they never reach us. Your receipts and invoices are available any time in the Stripe billing portal (the <b>manage subscription</b> button), and these terms are always at splitty.cc/terms.</li>
@@ -108,7 +109,7 @@
 <li>With Pro, you can photograph a receipt. Your browser shrinks it to a JPEG and sends it to us; we forward the image and our instructions to Anthropic's Claude model, with nothing that identifies you, and it transcribes the items, prices, tax and tip into a draft.</li>
 <li><b>The draft can be wrong.</b> AI misreads numbers, matches prices to the wrong line, merges or splits items, and sometimes misses things. The draft only fills in the form; nothing is created until you tap Create. <b>You are responsible for checking it</b> against the real receipt. We flag some mismatches (item prices that don't add up to the printed subtotal), but we can't catch everything, and we're not liable for a split based on a scan you didn't check.</li>
 <li>Only scan receipts you're entitled to share, and cover or crop anything you don't want processed, such as card numbers. Don't upload other documents or images you don't have the right to use.</li>
-<li>Splitty doesn't store the photo or the draft. We count your scans, and a failed scan logs the error message we got back, never the image. Anthropic processes the image under its own terms; see the <a href="/privacy">Privacy Policy</a>. Scanning counts against the daily caps in section 6 and may be slow, unavailable or switched off at times.</li>
+<li>Splitty doesn't store the photo or the draft. We count scan attempts on your account and record minimal operational telemetry: model, input/output token counts when available, and processing outcome. Receipt telemetry contains no photo, draft, receipt content, name, email or account id. Anthropic processes the image under its own terms; see the <a href="/privacy">Privacy Policy</a>. Scanning counts against the monthly allowance and daily caps in section 6 and may be slow, unavailable or switched off at times.</li>
 </ul>
 
 <h2>9. Your content</h2>

@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "dev:reset": "node -e \"require('fs').rmSync('.wrangler/state',{recursive:true,force:true});console.log('local Durable Object state cleared — restart npm run dev')\"",
     "test": "node test/integration.mjs",
+    "test:billing": "node test/billing.mjs",
+    "test:scans": "node test/scans.mjs",
     "test:meter": "node test/integration.mjs --meter",
     "deploy": "wrangler deploy"
   },
