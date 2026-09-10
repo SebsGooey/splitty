@@ -113,7 +113,7 @@ function parseInto(html, parent) {
   }
 }
 
-export function loadPage(file, { storage = {}, allowBillBootstrap = false } = {}) {
+export function loadPage(file, { storage = {}, allowBillBootstrap = false, beforeScripts } = {}) {
   const html = readFileSync(new URL("../public/" + file, import.meta.url), "utf8");
   const effects = [], sockets = [];
   const forbidden = (kind) => (...args) => { effects.push({ kind, args }); throw new Error("Blocked " + kind + " in offline UI test"); };
@@ -150,10 +150,11 @@ export function loadPage(file, { storage = {}, allowBillBootstrap = false } = {}
     } : forbidden("fetch"),
     WebSocket: FakeWebSocket, XMLHttpRequest: forbidden("XMLHttpRequest"), EventSource: forbidden("EventSource"),
     setTimeout: () => ++timerId, clearTimeout() {}, setInterval: () => ++timerId, clearInterval() {},
-    URL, URLSearchParams, structuredClone, console,
+    URL, URLSearchParams, AbortController, structuredClone, console,
     addEventListener() {}, prompt: forbidden("prompt"),
   });
   context.window = context;
+  beforeScripts?.(context);
   const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
   for (const [, attrs, inline] of scripts) {
     const src = attrs.match(/\bsrc=["']([^"']+)["']/)?.[1];

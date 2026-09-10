@@ -91,7 +91,7 @@ npm run dev        # http://localhost:8787
 
 ## Test
 
-The current baseline is **106 passing local checks**: 26 integration, 17 billing, 17 receipt-scanning, 22 onboarding and 24 settlement tests. Integration tests run against the local `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing. Billing and scan unit tests use Node.js 24's SQLite implementation with fake Stripe/Anthropic responses; they do not call the paid APIs.
+The current baseline is **154 passing local checks**: 26 integration, 17 billing, 17 receipt-scanning, 22 onboarding, 24 settlement, 24 connection and 24 receipt-input tests. Integration tests run against the local `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing. Billing and scan unit tests use Node.js 24's SQLite implementation with fake Stripe/Anthropic responses; they do not call the paid APIs.
 
 ```bash
 npm test             # 26 integration tests; keep npm run dev running separately
@@ -99,6 +99,8 @@ npm run test:billing # 17 billing tests; no dev server needed
 npm run test:scans   # 17 receipt-scanning tests; no dev server needed
 npm run test:onboarding # 22 demo and guest-invitation checks; offline
 npm run test:settlement # 24 paid-state and concurrency checks; offline
+npm run test:connections # 24 bill reconnect, storage and payment-link checks; offline
+npm run test:receipt-input # 24 photo, scan recovery and creation checks; offline
 npm run test:meter   # also trips the daily per-IP create cap (burns local budget — run last)
 npm run dev:reset    # clear local Durable Object state, then restart npm run dev
 ```
@@ -106,6 +108,8 @@ npm run dev:reset    # clear local Durable Object state, then restart npm run de
 The tests mint a session cookie with the same HMAC scheme the Worker uses (`SESSION_SECRET` from `.dev.vars`), so the signed-in path is exercised without touching Google; the default test identity is `admin@example.com` (set `ADMIN_EMAILS=admin@example.com` locally so it is Pro and never trips the free quota). Stripe webhook tests sign their own payloads with `STRIPE_WEBHOOK_SECRET`. Set a dummy `ANTHROPIC_API_KEY` locally to exercise the scan gate. `DEV=1` (also in the example) multiplies the daily create caps by 10 locally so a day of repeated runs doesn't hit the 30/IP cap — never set it in production.
 
 See [days 1–3 verification and isolated Stripe sandbox setup](docs/days-1-3-verification.md) for browser checks, real Stripe results, and the remaining scheduled-renewal verification. The sandbox fixture is separate from production and rejects live keys. The standard integration suite refuses remote targets and enabled billing before it can mutate data.
+
+See [mobile reliability verification](docs/mobile-pilot-verification.md) for the latest recovery and small-screen checks, and [the first-three-host pilot kit](docs/pilot-kit.md) for the invitation draft and real-meal checklist. Physical iPhone/Android camera and payment-app trials remain to be done.
 
 ## Deploy
 

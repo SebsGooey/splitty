@@ -13,7 +13,9 @@
     "deploy": "wrangler deploy",
     "test:onboarding": "node test/onboarding.mjs",
     "test:settlement": "node test/settlement.mjs",
-    "test:stripe-sandbox": "node test/stripe-sandbox.mjs"
+    "test:stripe-sandbox": "node test/stripe-sandbox.mjs",
+    "test:connections": "node test/bill-connection.mjs",
+    "test:receipt-input": "node --test test/receipt-input.mjs"
   },
   "devDependencies": {
     "wrangler": "^4"

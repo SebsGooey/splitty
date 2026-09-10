@@ -33,7 +33,7 @@
   </header>
   <hr class="rule">
 
-  <div class="error-box" id="errorBox"></div>
+  <div class="error-box" id="errorBox" role="status" aria-live="polite"></div>
 
   <section class="demo-entry" id="sampleDemo" aria-labelledby="sampleDemoTitle">
     <p class="demo-eyebrow">No account needed</p>
@@ -79,13 +79,15 @@
   <p class="section-label">Scan a receipt</p>
   <input type="file" id="photoInput" accept="image/*" capture="environment" class="hidden">
   <button class="btn accent" id="scanBtn">📷 &nbsp;Snap / upload receipt photo</button>
+  <button class="btn ghost hidden" id="cancelScanBtn" type="button">Cancel scan</button>
   <p class="hint" id="scanHint">AI reads the items — you review and fix before anything is created.</p>
   <p class="hint hidden" id="scanQuotaNote">An attempt counts when sent for processing, even if the receipt cannot be read. Counts reset on the 1st at midnight UTC; no rollover. Daily safety caps apply. <a href="/terms">Details</a></p>
 
   <hr class="rule">
   <p class="section-label">Bill details <span id="draftNote" class="hidden">— check the scan below</span></p>
+  <button class="btn ghost hidden" id="applyScanBtn" type="button">Use scanned receipt (replace bill details)</button>
   <div style="margin-bottom:10px">
-    <input type="text" id="restaurant" placeholder="Restaurant / bill name" maxlength="80" autocomplete="off">
+    <input type="text" id="restaurant" placeholder="Restaurant / bill name" aria-label="Restaurant or bill name" maxlength="80" autocomplete="off">
   </div>
 
   <div id="itemRows"></div>
@@ -94,15 +96,15 @@
   <hr class="rule">
   <div class="money-row">
     <label for="taxInput">Tax ($)</label>
-    <input type="number" id="taxInput" min="0" step="0.01" placeholder="0.00">
+    <input type="number" id="taxInput" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
   </div>
   <div class="money-row">
     <label for="tipValue">Tip / service</label>
-    <select id="tipMode" style="width:70px">
+    <select id="tipMode" aria-label="Tip in percent or dollars" style="width:70px">
       <option value="percent">%</option>
       <option value="amount">$</option>
     </select>
-    <input type="number" id="tipValue" min="0" step="0.01" placeholder="0" style="width:100px">
+    <input type="number" id="tipValue" min="0" step="0.01" inputmode="decimal" placeholder="0" style="width:100px">
   </div>
 
   <div class="trow big"><span class="lab">Total:</span><span id="totalPreview">$0.00</span></div>
@@ -140,9 +142,16 @@ const tipPct = (v) => Math.round(Math.min(Math.max(parseFloat(v) || 0, 0), 100) 
 let parseEnabled = true;
 let needAuth = false;
 let user = null;
+let sessionRevision = 0;
+let refreshRevision = 0;
 let account = null; // tier + usage from /api/me (null when signed out or auth is off)
 let billing = { enabled: false, priceLabel: "$2.99 / month", freeBillsPerMonth: 3, proScansPerMonth: 30 };
 let scanBusy = false;
+let createBusy = false;
+let createCompleted = false;
+let activeScan = null;
+let pendingDraft = null;
+let zeroWarningFor = null;
 
 const CREATE_LABEL = "Create bill & get share link";
 const SCAN_LABEL = "📷 &nbsp;Snap / upload receipt photo";
@@ -194,11 +203,11 @@ function refreshGates() {
   if (account) $("tierRow").classList.remove("hidden");
 
   // Create button: free accounts that are out of bills get routed to upgrade.
-  $("createBtn").disabled = locked;
-  $("createBtn").textContent = outOfFreeBills() ? "Free bills used up — upgrade for unlimited" : CREATE_LABEL;
+  $("createBtn").disabled = locked || createBusy;
+  $("createBtn").textContent = createBusy ? "Creating…" : outOfFreeBills() ? "Free bills used up — upgrade for unlimited" : CREATE_LABEL;
 
   // Scan button
-  $("scanBtn").disabled = locked || !parseEnabled || scanBusy || outOfScans();
+  $("scanBtn").disabled = locked || !parseEnabled || scanBusy || createBusy || outOfScans();
   $("scanBtn").classList.toggle("locked", !locked && parseEnabled && !canScan() && !account?.isPro);
   $("scanQuotaNote").classList.toggle("hidden", !account?.isPro);
   if (!parseEnabled) {
@@ -218,13 +227,18 @@ function refreshGates() {
 // signed out elsewhere) — reopen the sign-in gate instead of dead-ending.
 function sessionLost() {
   if (!needAuth) return;
+  sessionRevision++;
   user = null;
   account = null;
   refreshGates();
 }
 
-async function refreshMe() {
-  const me = await fetch("/api/me").then((r) => r.json());
+async function refreshMe(signal) {
+  const requestedSession = sessionRevision, requestedRefresh = ++refreshRevision;
+  const me = await fetch("/api/me", { signal }).then((r) => r.json());
+  // An older allowance refresh must not undo a later sign-out or sign-in.
+  if (sessionRevision !== requestedSession || refreshRevision !== requestedRefresh) return me;
+  if (Boolean(user) !== Boolean(me.user) || user?.email !== me.user?.email) sessionRevision++;
   user = me.user;
   account = me.account || null;
   if (me.billing) billing = me.billing;
@@ -305,6 +319,7 @@ function initGoogleButton(clientId) {
           });
           const out = await r.json();
           if (!r.ok) throw new Error(out.error || "Sign-in failed");
+          sessionRevision++;
           user = out.user;
           refreshGates();
           refreshMe().catch(() => {});
@@ -345,6 +360,7 @@ Promise.all([
 function showError(msg) {
   const box = $("errorBox");
   box.textContent = msg;
+  box.classList.remove("ok");
   box.classList.add("show");
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
   setTimeout(() => box.classList.remove("show"), 8000);
@@ -355,10 +371,10 @@ function addRow(name = "", priceCents = null, qty = 1) {
   const row = document.createElement("div");
   row.className = "item-row";
   row.innerHTML =
-    '<input type="text" class="name" placeholder="Item" maxlength="80" autocomplete="off">' +
-    '<input type="number" class="qty" min="1" max="99" step="1" value="1" title="quantity on this line — people can each claim how many they had" aria-label="quantity">' +
-    '<input type="number" class="price" placeholder="0.00" min="0" step="0.01" title="line total">' +
-    '<button class="rm" title="Remove" type="button">✕</button>';
+    '<input type="text" class="name" placeholder="Item" aria-label="Item name" maxlength="80" autocomplete="off">' +
+    '<input type="number" class="qty" min="1" max="99" step="1" inputmode="numeric" value="1" title="quantity on this line — people can each claim how many they had" aria-label="Quantity">' +
+    '<input type="number" class="price" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="Line total in dollars, for all units" title="line total for all units">' +
+    '<button class="rm" title="Remove item" aria-label="Remove item" type="button">✕</button>';
   row.querySelector(".name").value = name;
   row.querySelector(".qty").value = qty > 1 ? qty : 1;
   if (priceCents !== null) row.querySelector(".price").value = (priceCents / 100).toFixed(2);
@@ -403,6 +419,7 @@ try {
 
 // ---- receipt scan ----
 $("scanBtn").onclick = () => {
+  if (scanBusy || createBusy || !parseEnabled || (needAuth && !user)) return;
   if (outOfScans()) return showError(scanCapMessage());
   if (account?.isPro && !canScan()) return showError("Scanning is unavailable right now — you can still enter items manually.");
   if (!canScan()) return startUpgrade();
@@ -410,79 +427,192 @@ $("scanBtn").onclick = () => {
 };
 $("photoInput").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
-  if (!file) return;
+  if (!file || scanBusy || createBusy) return;
+  // The account can change while the native photo picker is open.
+  if (!parseEnabled || (needAuth && !user) || !canScan() || outOfScans()) {
+    e.target.value = "";
+    return showError(outOfScans() ? scanCapMessage() : "Scanning is unavailable — you can still enter items manually.");
+  }
+  pendingDraft = null;
+  $("applyScanBtn").classList.add("hidden");
+  const attempt = { controller: new AbortController(), submitted: false, fields: receiptFields(), session: sessionRevision };
+  activeScan = attempt;
   scanBusy = true;
-  $("scanBtn").disabled = true;
+  $("cancelScanBtn").classList.remove("hidden");
+  refreshGates();
   $("scanBtn").textContent = "Reading receipt…";
+  attempt.timer = setTimeout(() => cancelScan("The scan took too long."), 90_000);
   try {
-    const { mediaType, data } = await downscale(file);
+    const { mediaType, data } = await downscale(file, attempt.controller.signal);
+    if (activeScan !== attempt || sessionRevision !== attempt.session) return;
+    attempt.submitted = true;
     const res = await fetch("/api/parse", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ media_type: mediaType, data }),
+      signal: attempt.controller.signal,
     });
     const out = await res.json();
+    if (activeScan !== attempt || sessionRevision !== attempt.session) return;
     if (res.status === 401) sessionLost();
     if (out.account) { account = out.account; refreshGates(); }
     if (!res.ok) throw new Error(out.error || "Scan failed");
-    applyDraft(out.draft);
+    if (receiptFields() !== attempt.fields) {
+      pendingDraft = out.draft;
+      $("applyScanBtn").classList.remove("hidden");
+      showError("Your edits are kept. The scan is ready — choose Use scanned receipt below to replace the bill details.");
+    } else applyDraft(out.draft);
   } catch (err) {
-    showError(err.message || "Scan failed — enter items manually.");
+    if (activeScan === attempt) showError((err.message || "Scan failed") + " You can enter items manually.");
   } finally {
-    // Attempts can count even if processing fails or the response is lost.
-    if (user) { try { await refreshMe(); } catch {} }
-    scanBusy = false;
-    $("scanBtn").innerHTML = SCAN_LABEL;
-    refreshGates();
-    e.target.value = "";
+    if (activeScan === attempt) finishScan(attempt);
   }
 });
 
-async function downscale(file) {
-  const img = await createImageBitmap(file);
-  const MAX = 1568;
-  const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(img.width * scale);
-  canvas.height = Math.round(img.height * scale);
-  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.8));
-  const buf = await blob.arrayBuffer();
-  let bin = "";
-  const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+function receiptFields() {
+  return JSON.stringify([$("restaurant").value, [...$("itemRows").querySelectorAll("input")].map((input) => input.value),
+    $("taxInput").value, $("tipMode").value, $("tipValue").value]);
+}
+
+function finishScan(attempt) {
+  clearTimeout(attempt.timer);
+  activeScan = null;
+  scanBusy = false;
+  $("cancelScanBtn").classList.add("hidden");
+  $("scanBtn").innerHTML = SCAN_LABEL;
+  $("photoInput").value = "";
+  refreshGates();
+  // Don't trap the editor behind an allowance refresh. Cancellation cannot
+  // undo work already accepted by the server, so reconcile usage in background.
+  if (attempt.submitted && user) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    refreshMe(controller.signal).catch(() => {}).finally(() => clearTimeout(timer));
   }
-  return { mediaType: "image/jpeg", data: btoa(bin) };
+}
+
+function cancelScan(message = "Scan cancelled.") {
+  const attempt = activeScan;
+  if (!attempt) return;
+  attempt.controller.abort();
+  finishScan(attempt);
+  showError(message + (attempt.submitted ? " This attempt may still count because it was sent for processing." : " This photo was not sent for processing.") + " You can enter items manually.");
+}
+$("cancelScanBtn").onclick = () => { cancelScan(); $("scanBtn").focus(); };
+$("applyScanBtn").onclick = () => {
+  if (!pendingDraft || createBusy) return;
+  try { applyDraft(pendingDraft); } catch (err) { showError(err.message); }
+};
+
+async function downscale(file, signal) {
+  let img, url;
+  try {
+    // Some mobile browsers can display a photo even when createImageBitmap
+    // cannot decode it. Keep that fallback local; no original is uploaded.
+    if (typeof createImageBitmap === "function") {
+      try { img = await createImageBitmap(file); } catch {}
+    }
+    if (signal?.aborted) throw new Error("Scan cancelled.");
+    if (!img) {
+      url = URL.createObjectURL(file);
+      img = new Image();
+      await new Promise((resolve, reject) => {
+        const cleanup = () => { img.onload = img.onerror = null; signal?.removeEventListener("abort", abort); };
+        const abort = () => { cleanup(); reject(new Error("Scan cancelled.")); };
+        img.onload = () => { cleanup(); resolve(); };
+        img.onerror = () => { cleanup(); reject(new Error("Couldn't open this photo. Try a JPEG or PNG, or a screenshot of the receipt.")); };
+        signal?.addEventListener("abort", abort, { once: true });
+        img.src = url;
+      });
+    }
+    const width = img.naturalWidth || img.width, height = img.naturalHeight || img.height;
+    if (!width || !height) throw new Error("This photo has no readable image. Try another photo.");
+    const scale = Math.min(1, 1568 / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Couldn't prepare this photo. Try a smaller image.");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.8));
+    if (!blob) throw new Error("Couldn't prepare this photo. Try a smaller image.");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return { mediaType: "image/jpeg", data: btoa(bin) };
+  } finally {
+    img?.close?.();
+    if (url) { if (img) img.src = ""; URL.revokeObjectURL(url); }
+  }
 }
 
 function applyDraft(draft) {
+  if (!draft || !Array.isArray(draft.items) || draft.items.some((it) => !it || typeof it !== "object")) {
+    throw new Error("The scan didn't return readable items. Try another photo or enter them manually.");
+  }
   $("itemRows").innerHTML = "";
-  $("restaurant").value = (draft.restaurant || "").slice(0, 80);
+  $("restaurant").value = String(draft.restaurant || "").slice(0, 80);
   for (const it of (draft.items || []).slice(0, 100)) {
     addRow(String(it.name || "").slice(0, 80), Number.isInteger(it.priceCents) ? it.priceCents : 0,
-      Number.isInteger(it.qty) && it.qty > 1 ? it.qty : 1);
+      Number.isInteger(it.qty) && it.qty > 1 && it.qty <= 99 ? it.qty : 1);
   }
   if (!(draft.items || []).length) addRow();
   $("taxInput").value = Number.isInteger(draft.taxCents) ? (draft.taxCents / 100).toFixed(2) : "";
   if (Number.isInteger(draft.tipOrServiceCents) && draft.tipOrServiceCents > 0) {
     $("tipMode").value = "amount";
     $("tipValue").value = (draft.tipOrServiceCents / 100).toFixed(2);
+  } else {
+    $("tipMode").value = "percent";
+    $("tipValue").value = "";
   }
+  pendingDraft = null;
+  $("applyScanBtn").classList.add("hidden");
+  zeroWarningFor = null;
   $("draftNote").classList.remove("hidden");
   updateTotal();
-  if (draft.warnings?.length) showError("Check the scan: " + draft.warnings.join(" · "));
+  if (Array.isArray(draft.warnings) && draft.warnings.length) showError("Check the scan: " + draft.warnings.join(" · "));
 }
 
 // ---- create ----
+function validateCorrections() {
+  const invalid = (input, message) => { showError(message); input.focus(); return false; };
+  const moneyIsValid = (input) => !input.validity?.badInput && (input.value === "" ||
+    (Number.isFinite(Number(input.value)) && Number(input.value) >= 0 && Number(input.value) <= 100000 &&
+      Math.abs(Number(input.value) * 100 - Math.round(Number(input.value) * 100)) < 0.000001));
+  for (const row of $("itemRows").querySelectorAll(".item-row")) {
+    const name = row.querySelector(".name"), qty = row.querySelector(".qty"), price = row.querySelector(".price");
+    if (!name.value.trim()) {
+      if (price.value !== "" || price.validity?.badInput) return invalid(name, "Give each priced item a name so it isn't left out of the bill.");
+      continue;
+    }
+    if (qty.validity?.badInput || !Number.isInteger(Number(qty.value)) || Number(qty.value) < 1 || Number(qty.value) > 99) {
+      return invalid(qty, "Use a whole quantity from 1 to 99 for each item.");
+    }
+    if (!moneyIsValid(price)) return invalid(price, "Use a line total from $0 to $100,000, with at most two decimal places.");
+  }
+  if (!moneyIsValid($("taxInput"))) return invalid($("taxInput"), "Use a tax amount from $0 to $100,000, with at most two decimal places.");
+  const tip = $("tipValue");
+  if ($("tipMode").value === "amount") {
+    if (!moneyIsValid(tip)) return invalid(tip, "Use a tip amount from $0 to $100,000, with at most two decimal places.");
+  } else if (tip.validity?.badInput || !Number.isFinite(Number(tip.value)) || Number(tip.value) < 0 || Number(tip.value) > 100 ||
+    Math.abs(Number(tip.value) * 10 - Math.round(Number(tip.value) * 10)) >= 0.000001) {
+    return invalid(tip, "Use a tip from 0 to 100%, with at most one decimal place.");
+  }
+  return true;
+}
+
 $("createBtn").onclick = async () => {
+  if (createBusy || (needAuth && !user)) return;
   if (outOfFreeBills()) return startUpgrade();
+  if (!validateCorrections()) return;
   const items = readItems();
   if (!items.length) return showError("Add at least one item (or scan a receipt).");
   if (items.some((i) => i.priceCents === 0)) {
     // allow but warn once
-    if (!$("createBtn").dataset.zeroWarned) {
-      $("createBtn").dataset.zeroWarned = "1";
+    if (zeroWarningFor !== receiptFields()) {
+      zeroWarningFor = receiptFields();
       return showError("Some items have no price — tap Create again if that's intentional.");
     }
   }
@@ -502,8 +632,10 @@ $("createBtn").onclick = async () => {
       : { mode: "amount", value: toCents($("tipValue").value) },
     pay: pay.value,
   };
-  $("createBtn").disabled = true;
-  $("createBtn").textContent = "Creating…";
+  createBusy = true;
+  createCompleted = false;
+  if (activeScan) cancelScan("Creating your manual bill. Scan cancelled.");
+  refreshGates();
   try {
     const res = await fetch("/api/bills", {
       method: "POST",
@@ -514,17 +646,28 @@ $("createBtn").onclick = async () => {
     if (res.status === 401) sessionLost();
     if (res.status === 402 && out.account) { account = out.account; refreshGates(); }
     if (!res.ok) throw new Error(out.error || "Could not create the bill.");
+    createCompleted = true;
     // Private-mode browsers can throw on setItem — the bill exists either way,
     // so always navigate; the #edit= fragment re-delivers the creator token.
     try { localStorage.setItem("splitty-creator-" + out.billId, out.creatorToken); }
     catch { return void (location.href = "/b/" + out.billId + "#edit=" + out.creatorToken); }
     location.href = "/b/" + out.billId;
   } catch (err) {
-    showError(err.message);
-    $("createBtn").disabled = false;
+    showError(err.message || "Couldn't reach the server. Check your connection and try again.");
+    createBusy = false;
     refreshGates();
   }
 };
+
+// Back from a created bill can restore the exact page, including its busy
+// flag. Only unlock a completed creation; an unfinished request stays guarded.
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && createCompleted) {
+    createBusy = false;
+    createCompleted = false;
+    refreshGates();
+  }
+});
 </script>
 </body>
 </html>

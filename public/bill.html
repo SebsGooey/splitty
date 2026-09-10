@@ -22,7 +22,7 @@
 </style>
 </head>
 <body>
-<div class="conn" id="conn">reconnecting…</div>
+<div class="conn off" id="conn" role="status">connecting…</div>
 <main class="receipt">
   <header>
     <h1><a href="/">SPLITTY</a></h1>
@@ -37,7 +37,7 @@
     <p class="section-label">Who are you?</p>
     <div id="joinPeople" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
     <form id="joinForm" autocomplete="off" style="display:flex;gap:6px">
-      <input type="text" id="joinName" placeholder="Your name" maxlength="40">
+      <input type="text" id="joinName" placeholder="Your name" aria-label="Your name" maxlength="40" autocomplete="name">
       <button class="btn small" type="submit" style="border-radius:8px">Join</button>
     </form>
     <p class="hint">Everyone already on the bill is shown above — if that's not you, join with your name. Then tap the items you had.</p>
@@ -86,7 +86,7 @@
       <div style="height:8px"></div>
       <button class="btn ghost" id="lockBtn" type="button">🔒 lock bill</button>
       <p class="hint">Backup edit link (save it somewhere in case this browser forgets you):</p>
-      <input type="text" id="editLink" readonly onclick="this.select()" style="font-size:.7rem">
+      <input type="text" id="editLink" aria-label="Backup edit link" readonly onclick="this.select()" style="font-size:.7rem">
     </div>
   </div>
 
@@ -107,14 +107,14 @@
   <!-- creator edit view -->
   <div id="editView" class="hidden">
     <p class="section-label">Edit bill</p>
-    <div style="margin-bottom:10px"><input type="text" id="editRestaurant" maxlength="80" placeholder="Bill name"></div>
+    <div style="margin-bottom:10px"><input type="text" id="editRestaurant" maxlength="80" placeholder="Bill name" aria-label="Bill name"></div>
     <div id="editRows"></div>
     <button class="btn ghost" id="editAddItem" type="button">+ add item</button>
     <hr class="rule">
-    <div class="money-row"><label>Tax ($)</label><input type="number" id="editTax" min="0" step="0.01"></div>
-    <div class="money-row"><label>Tip / service</label>
-      <select id="editTipMode" style="width:70px"><option value="percent">%</option><option value="amount">$</option></select>
-      <input type="number" id="editTipValue" min="0" step="0.01" style="width:100px">
+    <div class="money-row"><label for="editTax">Tax ($)</label><input type="number" id="editTax" min="0" step="0.01" inputmode="decimal"></div>
+    <div class="money-row"><label for="editTipValue">Tip / service</label>
+      <select id="editTipMode" aria-label="Tip or service charge type" style="width:70px"><option value="percent">%</option><option value="amount">$</option></select>
+      <input type="number" id="editTipValue" min="0" step="0.01" inputmode="decimal" style="width:100px">
     </div>
     <hr class="rule">
     <button class="btn" id="editSave" type="button">Save changes</button>
@@ -141,16 +141,25 @@ if (!/^[A-Za-z0-9_-]{16,64}$/.test(billId)) location.href = "/";
 
 // Creator token can arrive via #edit= backup link. Only accept well-formed
 // tokens so a garbled link can't clobber a valid stored token.
+let creatorToken = null;
+try { creatorToken = localStorage.getItem("splitty-creator-" + billId); } catch {}
 if (location.hash.startsWith("#edit=")) {
   const t = location.hash.slice(6);
+  let saved = false;
   if (/^[A-Za-z0-9_-]{16,64}$/.test(t)) {
-    try { localStorage.setItem("splitty-creator-" + billId, t); } catch {}
+    creatorToken = t; // The backup link also works when browser storage is blocked.
+    try { localStorage.setItem("splitty-creator-" + billId, t); saved = true; } catch {}
+  } else {
+    saved = true; // Strip an invalid fragment, retaining any valid stored token.
   }
-  history.replaceState(null, "", location.pathname);
+  // If storage failed, retain the backup fragment so reloading still works.
+  if (saved) history.replaceState(null, "", location.pathname);
 }
-const creatorToken = localStorage.getItem("splitty-creator-" + billId);
 let me = null; // {personId, token}
-try { me = JSON.parse(localStorage.getItem("splitty-me-" + billId)); } catch {}
+try {
+  const saved = JSON.parse(localStorage.getItem("splitty-me-" + billId));
+  if (saved && typeof saved.personId === "string" && saved.personId && typeof saved.token === "string" && saved.token) me = saved;
+} catch {}
 
 let bill = null;
 let activePersonId = null; // whose claims a tap toggles (creator can switch)
@@ -165,74 +174,168 @@ function showError(msg) {
 }
 
 // ---------- websocket with reconnect ----------
-// One socket lineage at a time: a generation counter makes orphaned sockets
-// inert (they can't touch the active socket, its ping timer, or the backoff),
-// and every handler is bound to its own socket instance, never the global.
+// A socket is usable only after its fresh snapshot arrives. Generation checks
+// keep late fetches and old sockets inert; mutations are never queued/replayed.
 let ws = null, gen = 0, backoff = 500, reconnectTimer = null, billGone = false;
+let connectionReady = false, checking = false, connectAbort = null;
+let connectionTimer = null, pingTimer = null, pongTimer = null;
+let pendingJoin = false, interruptedJoin = false, joinTimer = null;
 
-function connect() {
-  if (billGone) return;
-  if (ws && ws.readyState <= 1) return; // already open or connecting
-  clearTimeout(reconnectTimer);
-  const myGen = ++gen;
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const sock = new WebSocket(`${proto}://${location.host}/api/bills/${billId}/ws`);
-  ws = sock;
-  let ping = null;
-
-  sock.onopen = () => {
-    if (myGen !== gen) { try { sock.close(); } catch {} return; }
-    backoff = 500;
-    $("conn").classList.remove("off");
-    ping = setInterval(() => { if (sock.readyState === 1) sock.send("ping"); }, 25000);
-  };
-  sock.onmessage = (e) => {
-    if (myGen !== gen || e.data === "pong") return;
-    let msg;
-    try { msg = JSON.parse(e.data); } catch { return; }
-    if (msg.type === "state") {
-      const first = bill === null;
-      if (bill && msg.bill.version < bill.version) return; // stale
-      bill = msg.bill;
-      if (first) firstRender();
-      render();
-    } else if (msg.type === "joined") {
-      me = { personId: msg.personId, token: msg.token };
-      try { localStorage.setItem("splitty-me-" + billId, JSON.stringify(me)); } catch {}
-      activePersonId = me.personId;
-      joined = true;
-      watching = false;
-      showView("bill");
-    } else if (msg.type === "error") {
-      showError(msg.message);
+function connectionStatus(ready) {
+  connectionReady = ready;
+  if (!ready) {
+    // Native long-press/open-link actions bypass onclick. Remove destinations
+    // until render builds new links from the next confirmed bill snapshot.
+    for (const link of document.querySelectorAll(".paylink")) {
+      link.removeAttribute("href");
+      link.setAttribute("aria-disabled", "true");
     }
-  };
-  sock.onclose = (e) => {
-    clearInterval(ping);
-    if (myGen !== gen) return; // orphaned socket — the active lineage owns reconnects
-    if (e.code === 1000 && (e.reason === "expired" || e.reason === "gone")) {
+  }
+  $("conn").classList.toggle("off", !ready);
+  $("conn").textContent = navigator.onLine === false ? "offline — waiting for connection" : (bill ? "reconnecting…" : "connecting…");
+}
+
+function joining(pending) {
+  clearTimeout(joinTimer);
+  pendingJoin = pending;
+  const button = $("joinForm").querySelector('button[type="submit"]');
+  button.disabled = pending;
+  button.textContent = pending ? "Joining…" : "Join";
+  if (pending) joinTimer = setTimeout(retryConnection, 15000);
+}
+
+function stopConnection() {
+  ++gen;
+  clearTimeout(reconnectTimer);
+  clearTimeout(connectionTimer);
+  clearTimeout(pongTimer);
+  clearTimeout(joinTimer);
+  clearInterval(pingTimer);
+  connectAbort?.abort();
+  connectAbort = null;
+  checking = false;
+  connectionStatus(false);
+  const previous = ws;
+  ws = null;
+  try { previous?.close(); } catch {}
+  if (pendingJoin) interruptedJoin = true;
+}
+
+function retryConnection() {
+  stopConnection();
+  if (billGone || navigator.onLine === false) return;
+  reconnectTimer = setTimeout(() => connect(), backoff + Math.random() * 300);
+  backoff = Math.min(backoff * 2, 15000);
+}
+
+async function connect(force = false) {
+  if (billGone) return;
+  if (navigator.onLine === false) { stopConnection(); return; }
+  if (!force && (checking || (ws && ws.readyState <= 1))) return;
+  stopConnection();
+  const myGen = gen;
+  checking = true;
+  connectAbort = new AbortController();
+  // Covers a stalled fetch, upgrade, or missing initial state on mobile networks.
+  connectionTimer = setTimeout(retryConnection, 15000);
+  try {
+    // WebSocket upgrade failures hide HTTP status; check for actual deletion on
+    // every attempt so transient network/server failures never look like expiry.
+    const response = await fetch("/api/bills/" + billId, { cache: "no-store", signal: connectAbort.signal });
+    if (myGen !== gen) return;
+    if (response.status === 404 || response.status === 410) {
+      stopConnection();
       billGone = true;
       showGone();
       return;
     }
-    $("conn").classList.add("off");
-    reconnectTimer = setTimeout(connect, backoff + Math.random() * 300);
-    backoff = Math.min(backoff * 2, 15000);
-  };
-  sock.onerror = () => { try { sock.close(); } catch {} };
+    if (!response.ok) throw new Error("Bill temporarily unavailable");
+    await response.json();
+    if (myGen !== gen) return;
+    checking = false;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const sock = new WebSocket(`${proto}://${location.host}/api/bills/${billId}/ws`);
+    ws = sock;
+    sock.onmessage = (e) => {
+      if (myGen !== gen) return;
+      if (e.data === "pong") { clearTimeout(pongTimer); return; }
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === "state" && msg.bill && Number.isInteger(msg.bill.version)) {
+        const first = bill === null;
+        if (bill && msg.bill.version < bill.version) return; // stale
+        bill = msg.bill;
+        clearTimeout(connectionTimer);
+        if (!connectionReady) {
+          connectionStatus(true);
+          backoff = 500;
+          pingTimer = setInterval(() => {
+            if (myGen !== gen) return;
+            try {
+              if (sock.readyState !== 1) return retryConnection();
+              sock.send("ping");
+              pongTimer = setTimeout(retryConnection, 10000);
+            } catch { retryConnection(); }
+          }, 25000);
+        }
+        if (interruptedJoin) {
+          interruptedJoin = false;
+          joining(false);
+          showError("Joining was interrupted. Check the names above before joining again; ask the creator to remove a duplicate if needed.");
+        }
+        if (first) firstRender();
+        render();
+      } else if (msg.type === "joined") {
+        me = { personId: msg.personId, token: msg.token };
+        joining(false);
+        interruptedJoin = false;
+        try { localStorage.setItem("splitty-me-" + billId, JSON.stringify(me)); }
+        catch { showError("Joined for this visit. This browser cannot save your place, so keep this tab open."); }
+        activePersonId = me.personId;
+        joined = true;
+        watching = false;
+        showView("bill");
+      } else if (msg.type === "error") {
+        joining(false);
+        showError(msg.message);
+      }
+    };
+    sock.onclose = (e) => {
+      if (myGen !== gen) return;
+      if (e.code === 1000 && (e.reason === "expired" || e.reason === "gone")) {
+        stopConnection();
+        billGone = true;
+        showGone();
+      } else retryConnection();
+    };
+    sock.onerror = () => { if (myGen === gen) retryConnection(); };
+  } catch {
+    if (myGen === gen) retryConnection();
+  }
+}
+
+function canSend() {
+  return !billGone && connectionReady && navigator.onLine !== false && document.visibilityState !== "hidden" && ws?.readyState === 1;
+}
+
+function connectionError() {
+  if (billGone) return;
+  showError(navigator.onLine === false ? "You're offline. Reconnect before changing or paying this bill." : "Reconnecting — wait for the latest bill, then try again.");
+  connect();
 }
 
 function sendMsg(o) {
-  if (ws?.readyState === 1) {
-    ws.send(JSON.stringify(o));
-    return true;
+  if (canSend()) {
+    try { ws.send(JSON.stringify(o)); return true; }
+    catch { retryConnection(); }
   }
-  showError("Reconnecting — try again in a second.");
-  connect();
+  connectionError();
   return false;
 }
 
 function showGone() {
+  $("conn").classList.remove("off");
   document.querySelector("main").innerHTML =
     '<header><h1>SPLITTY</h1></header><hr class="rule">' +
     '<p class="hint">This bill doesn\'t exist (or expired after 90 days of inactivity).</p>' +
@@ -241,9 +344,12 @@ function showGone() {
 
 // Sleeping phones: when we come back, make sure the socket is alive.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") connect();
+  if (document.visibilityState === "visible") connect(true);
 });
-window.addEventListener("online", () => connect());
+window.addEventListener("online", () => connect(true));
+window.addEventListener("offline", () => { if (!billGone) stopConnection(); });
+window.addEventListener("pagehide", () => { if (!billGone) stopConnection(); });
+window.addEventListener("pageshow", (e) => { if (e.persisted) connect(true); });
 
 // ---------- views ----------
 function showView(name) {
@@ -322,7 +428,7 @@ function render() {
     btn.className = "chip";
     btn.style.setProperty("--pc", "#888");
     btn.innerHTML = "+ join";
-    btn.onclick = () => showView("join");
+    btn.onclick = () => { showView("join"); $("joinName").focus(); };
     $("people").appendChild(btn);
   }
 
@@ -420,7 +526,7 @@ function render() {
     const badge = isPayee ? '<span class="paid-badge host">paid the bill</span>' : (isPaid ? '<span class="paid-badge">✓ paid</span>' : "");
     card.innerHTML =
       `<h3><span class="avatar" style="background:${row.person.color}">${esc(initials(row.person.name))}</span>` +
-      `${esc(row.person.name)}${badge}<span class="owes">${fmt(row.totalCents)}</span></h3>` +
+      `<span class="person-name">${esc(row.person.name)}</span>${badge}<span class="owes">${fmt(row.totalCents)}</span></h3>` +
       `<div class="mini"><span>items ${fmt(row.shareCents)}</span><span>tax ${fmt(row.taxCents)}</span><span>tip ${fmt(row.tipCents)}</span></div>` +
       (list ? `<ul>${list}</ul>` : '<ul><li><span>nothing claimed yet…</span></li></ul>');
 
@@ -434,11 +540,16 @@ function render() {
         for (const l of payLinks(pay, row.totalCents, note)) {
           const a = document.createElement("a");
           a.className = "paylink " + l.key;
-          a.href = l.url;
+          if (canSend()) a.href = l.url;
+          else a.setAttribute("aria-disabled", "true");
           a.target = "_blank";
           a.rel = "noopener";
           a.title = `Pay ${fmt(row.totalCents)} via ${l.label} (${l.handle(l.user)})`;
           a.textContent = `${l.label} ${fmt(row.totalCents)}`;
+          a.onclick = (e) => {
+            if (!canSend()) { e.preventDefault(); connectionError(); }
+            else if (bill.version !== renderedVersion) { e.preventDefault(); showError("This bill changed. Review the current amount before paying."); }
+          };
           payRow.appendChild(a);
         }
       }
@@ -532,10 +643,10 @@ function trow(label, val, big) {
 $("joinForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const name = $("joinName").value.trim();
-  if (!name) return;
+  if (!name || pendingJoin || joined) return;
   // The creator token (when this device has one) marks this person as the
   // payee — the one everybody else pays back.
-  sendMsg({ type: "join", name, token: creatorToken || undefined });
+  if (sendMsg({ type: "join", name, token: creatorToken || undefined })) joining(true);
 });
 $("watchBtn").onclick = () => { watching = true; showView("bill"); };
 
@@ -580,16 +691,17 @@ $("editBtn").onclick = () => {
   $("editTipMode").value = bill.tip.mode;
   $("editTipValue").value = bill.tip.mode === "percent" ? bill.tip.value : (bill.tip.value / 100).toFixed(2);
   showView("edit");
+  $("editRestaurant").focus();
 };
 function addEditRow(item) {
   const row = document.createElement("div");
   row.className = "item-row";
   if (item?.id) row.dataset.itemId = item.id;
   row.innerHTML =
-    '<input type="text" class="name" placeholder="Item" maxlength="80">' +
-    '<input type="number" class="qty" min="1" max="99" step="1" value="1" title="quantity on this line" aria-label="quantity">' +
-    '<input type="number" class="price" min="0" step="0.01" placeholder="0.00" title="line total">' +
-    '<button class="rm" type="button" title="Remove">✕</button>';
+    '<input type="text" class="name" placeholder="Item" maxlength="80" aria-label="Item name">' +
+    '<input type="number" class="qty" min="1" max="99" step="1" inputmode="numeric" value="1" title="quantity on this line" aria-label="quantity">' +
+    '<input type="number" class="price" min="0" step="0.01" inputmode="decimal" placeholder="0.00" title="line total" aria-label="Line total in dollars">' +
+    '<button class="rm" type="button" title="Remove" aria-label="Remove item">✕</button>';
   if (item) {
     row.querySelector(".name").value = item.name;
     row.querySelector(".qty").value = item.qty || 1;
@@ -631,13 +743,7 @@ $("editSave").onclick = () => {
 };
 
 // ---------- boot ----------
-fetch("/api/bills/" + billId)
-  .then((r) => (r.ok ? r.json() : Promise.reject()))
-  .then(() => connect())
-  .catch(() => {
-    billGone = true;
-    showGone();
-  });
+connect();
 </script>
 </body>
 </html>

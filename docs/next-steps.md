@@ -13,9 +13,9 @@ Keep the current offer stable during the pilot: Free includes three manual bills
 
 The first implementation batch is the prominent sample demo, guest-to-host action and billing lifecycle verification. Pilot recruitment can run alongside that work.
 
-The current demo is below the creation form (`public/index.html`), and normal settled bills lack an explicit invitation to create the next bill (`public/bill.html`). Reuse the existing demo where practical, label it as a demonstration, and keep private bill data separate. Place the guest invitation after their task so it does not interrupt claiming or payment.
+The sample now appears before sign-in on the create page, and eligible settled guests see a next-bill invitation. The sample is fictional and uses only in-memory state. See the implementation status below.
 
-The launch passed 60 integration/billing/scan checks, and live Checkout and the customer portal were opened without completing payment. Mocked billing tests cover lifecycle edge cases, but the next verification should exercise actual Stripe sandbox subscriptions, delivered webhooks and application access together. Use sandbox test clocks for renewal and cancellation timing. Keep sandbox credentials, products, webhook endpoints and Durable Object data isolated from production. [Stripe's billing test guidance](https://docs.stripe.com/billing/testing).
+The first launch passed 60 integration/billing/scan checks; the days 1–3 release expanded this to 106 local checks and verified real sandbox Checkout, payment failure/recovery and cancellation events. Full scheduled renewal remains unverified because the temporary sandbox key cannot create Stripe test clocks. Use a claimed sandbox with test-clock access to finish renewal and automatic cancellation timing. Keep sandbox credentials, products, webhook endpoints and Durable Object data isolated from production. [Stripe's billing test guidance](https://docs.stripe.com/billing/testing).
 
 Track the pilot with existing operational counts and voluntary check-ins. A small private cohort sheet can record a participant-chosen identifier, signup source they volunteer, first completed group bill, second bill, guest referral and feedback. Get agreement to participate; store no receipt photos, payment handles or private bill URLs in the sheet. Do not count founder-granted access as paid conversion. If temporary Pro access is offered for usability testing, disclose its expiry and that it does not automatically charge them; evaluate paid interest separately after access ends or with a separate Free cohort.
 
@@ -39,3 +39,11 @@ Defer native mobile apps, annual/lifetime plans, reward systems, broad redesigns
 ## Days 1–3 implementation status
 
 The prominent sample bill, guest-to-host invitation, and settlement reliability fixes are implemented. All 106 local regression checks pass, alongside desktop/mobile viewport and actual guest-flow browser checks. Real Stripe sandbox Checkout, failed-invoice handling/recovery, cancellation webhooks and entitlement boundaries were verified. Full scheduled renewal using Stripe test clocks still requires a sandbox key with test-clock access. See [verification evidence and reproduction](days-1-3-verification.md). Founder recruitment and real meal trials remain the next step.
+
+The [first-three-host pilot kit](pilot-kit.md) includes an invitation draft, meal checklist and minimal private tracking template. It is ready to use; no invitations have been sent and no participants have been recruited by Codex.
+
+## Mobile reliability and pilot preparation
+
+The next implementation pass fixes narrow-screen layouts, reconnects after temporary network failures or mobile resume, preserves unsent corrections, disables payment destinations until fresh bill state arrives, and improves scan cancellation and creation recovery. The local baseline is now 154 passing checks. See [mobile verification and remaining limits](mobile-pilot-verification.md).
+
+Start with three real dinner hosts using the pilot kit. Physical iPhone Safari and Android Chrome trials, including camera input and payment-app return, are the next product evidence to collect. Keep scheduled Stripe renewal verification as a separate open task. A later reliability change should add server-side idempotency for manual bill creation after an ambiguous lost response; this release guards concurrent taps but does not make that retry safe by itself.

@@ -1,7 +1,6 @@
 # Splitty — handoff (2026-09-06)
 
-State of play and what's next, written for whoever picks this up in Claude Code.
-The README covers how the app works; this file covers **where we are and what to do**.
+Historical snapshot from September 6. Billing, support routing and onboarding have since shipped. Use [README.md](README.md), [the current roadmap](docs/next-steps.md), and [verification notes](docs/days-1-3-verification.md) for current setup and status. Sandbox credentials belong only in the isolated test Worker; the old instruction below about test keys on the live site is superseded.
 
 ## Where things stand
 
