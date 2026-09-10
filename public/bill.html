@@ -13,6 +13,13 @@
 <link rel="stylesheet" href="/app.css">
 <script src="/pay.js"></script>
 <script src="/money.js"></script>
+<style>
+.next-bill { margin-top: 20px; padding-top: 18px; border-top: 2px dashed var(--line); }
+.next-bill .section-label { color: var(--ok); font-size: .64rem; letter-spacing: .08em; }
+.next-bill h2 { margin: 0; font-size: 1rem; }
+.next-bill .hint { margin: 8px 0 12px; text-align: left; }
+.next-bill .btn { text-align: center; text-decoration: none; font-size: .85rem; }
+</style>
 </head>
 <body>
 <div class="conn" id="conn">reconnecting…</div>
@@ -56,11 +63,19 @@
 
     <hr class="rule">
     <p class="section-label">Each person owes</p>
+    <p id="paidResetNotice" class="banner info hidden" role="status" aria-live="polite" aria-atomic="true"></p>
     <div id="personTotals"></div>
     <div id="settleBar" class="hidden">
       <button class="btn ghost" id="summaryBtn" type="button">📋 copy summary</button>
       <p class="hint" id="settleHint"></p>
     </div>
+
+    <section id="nextBillInvite" class="next-bill hidden" aria-labelledby="nextBillHeading">
+      <p class="section-label">Your share is marked as paid</p>
+      <h2 id="nextBillHeading">Hosting next time?</h2>
+      <p class="hint">Sign in with Google to create up to 3 free manual bills each calendar month. Your friends join and claim without an account.</p>
+      <a id="nextBillLink" class="btn ghost" href="/" rel="noreferrer">Split your next bill <span aria-hidden="true">→</span></a>
+    </section>
 
     <div id="creatorTools" class="hidden">
       <hr class="rule">
@@ -105,7 +120,7 @@
     <button class="btn" id="editSave" type="button">Save changes</button>
     <div style="height:8px"></div>
     <button class="btn ghost" id="editCancel" type="button">Cancel</button>
-    <p class="hint">Claims on deleted items are removed; everything else is kept.</p>
+    <p class="hint">Claims on deleted items are removed. Changes to amounts or the split clear paid marks. Check payments already sent before paying again.</p>
   </div>
 
   <div class="barcode"></div>
@@ -186,6 +201,7 @@ function connect() {
       try { localStorage.setItem("splitty-me-" + billId, JSON.stringify(me)); } catch {}
       activePersonId = me.personId;
       joined = true;
+      watching = false;
       showView("bill");
     } else if (msg.type === "error") {
       showError(msg.message);
@@ -372,6 +388,14 @@ function render() {
   // per-person cards
   const pay = bill.pay || {};
   const paid = bill.paid || {};
+  const renderedVersion = bill.version;
+  const resetNotice = $("paidResetNotice");
+  const resetAt = Number.isFinite(bill.paidResetAt) && bill.paidResetAt > 0 ? String(bill.paidResetAt) : "";
+  resetNotice.classList.toggle("hidden", !resetAt);
+  if (resetNotice.dataset.resetAt !== resetAt) {
+    resetNotice.textContent = resetAt ? "The bill changed, so paid marks were cleared. Review the updated amounts and check any payments already sent before paying again." : "";
+    resetNotice.dataset.resetAt = resetAt;
+  }
   const payee = bill.creatorPersonId || null; // the person who paid the restaurant, if they joined
   const hasPay = PAY_NETWORKS.some((n) => pay[n.key]);
   const note = "Splitty · " + bill.restaurant;
@@ -424,6 +448,7 @@ function render() {
         b.className = "paidbtn" + (isPaid ? " undo" : "");
         b.textContent = isPaid ? "undo paid" : "mark as paid";
         b.onclick = () => sendMsg({ type: "set_paid", personId: pid, paid: !isPaid,
+          ...(!isPaid ? { expectedVersion: renderedVersion } : {}),
           token: me && pid === me.personId ? me.token : creatorToken });
         payRow.appendChild(b);
       }
@@ -456,6 +481,15 @@ function render() {
   $("settleHint").textContent = hasPay
     ? "Pay buttons open the app with the amount filled in — then tap “mark as paid”."
     : (isCreator ? "Add your Venmo / Cash App / PayPal under creator tools and everyone gets a Pay button." : "");
+
+  // Invite a guest to host only after their own claimed share is marked paid
+  // and no priced items remain unclaimed. Paid is a person's/creator's note,
+  // not a verified transfer; spectators and zero-owed participants stay out.
+  const myTotal = me && t.perPerson.find((row) => row.person.id === me.personId);
+  const inviteToHost = Boolean(!isCreator && joined && !watching && myTotal &&
+    me.personId !== payee && myTotal.totalCents > 0 && myTotal.items.length > 0 &&
+    paid[me.personId] && t.unclaimed === 0);
+  $("nextBillInvite").classList.toggle("hidden", !inviteToHost);
 
   if (isCreator) $("lockBtn").textContent = bill.locked ? "🔓 unlock bill" : "🔒 lock bill";
 }

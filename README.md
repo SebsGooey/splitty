@@ -16,6 +16,10 @@ Snap a receipt, share a link, split the bill — live on every phone at the tabl
 
 Bills self-delete after 90 days of inactivity. Receipt images are never stored.
 
+Visitors can try `/demo` before signing in: a fictional bill with shared items, exact totals and no API writes or saved data. Guests who finish their own share see an invitation to host their next bill.
+
+Financial changes clear paid acknowledgements and show a reminder to check payments already sent. A new paid acknowledgement must match the bill version the person saw.
+
 ## Accounts and tiers
 
 Joining a bill via its link never needs an account. Creating bills and scanning receipts need a Google sign-in, and sit behind two tiers:
@@ -87,17 +91,21 @@ npm run dev        # http://localhost:8787
 
 ## Test
 
-The current baseline is **60 passing checks**: 26 integration, 17 billing and 17 receipt-scanning tests. Integration tests run against the local `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing. Billing and scan unit tests use Node.js 24's SQLite implementation with fake Stripe/Anthropic responses; they do not call the paid APIs.
+The current baseline is **106 passing local checks**: 26 integration, 17 billing, 17 receipt-scanning, 22 onboarding and 24 settlement tests. Integration tests run against the local `npm run dev` server, so Durable Objects, WebSockets and asset routing are the real thing. Billing and scan unit tests use Node.js 24's SQLite implementation with fake Stripe/Anthropic responses; they do not call the paid APIs.
 
 ```bash
 npm test             # 26 integration tests; keep npm run dev running separately
 npm run test:billing # 17 billing tests; no dev server needed
 npm run test:scans   # 17 receipt-scanning tests; no dev server needed
+npm run test:onboarding # 22 demo and guest-invitation checks; offline
+npm run test:settlement # 24 paid-state and concurrency checks; offline
 npm run test:meter   # also trips the daily per-IP create cap (burns local budget — run last)
 npm run dev:reset    # clear local Durable Object state, then restart npm run dev
 ```
 
 The tests mint a session cookie with the same HMAC scheme the Worker uses (`SESSION_SECRET` from `.dev.vars`), so the signed-in path is exercised without touching Google; the default test identity is `admin@example.com` (set `ADMIN_EMAILS=admin@example.com` locally so it is Pro and never trips the free quota). Stripe webhook tests sign their own payloads with `STRIPE_WEBHOOK_SECRET`. Set a dummy `ANTHROPIC_API_KEY` locally to exercise the scan gate. `DEV=1` (also in the example) multiplies the daily create caps by 10 locally so a day of repeated runs doesn't hit the 30/IP cap — never set it in production.
+
+See [days 1–3 verification and isolated Stripe sandbox setup](docs/days-1-3-verification.md) for browser checks, real Stripe results, and the remaining scheduled-renewal verification. The sandbox fixture is separate from production and rejects live keys. The standard integration suite refuses remote targets and enabled billing before it can mutate data.
 
 ## Deploy
 

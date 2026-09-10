@@ -1,0 +1,116 @@
+/* Sample-bill styles are scoped so the live bill and create form keep theirs. */
+.demo-entry {
+  margin: 0 0 22px;
+  padding: 18px;
+  border: 1px solid #d7b9a8;
+  border-radius: 12px;
+  background: #f8eee4;
+}
+.demo-eyebrow {
+  margin: 0;
+  color: #615649;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  line-height: 1.5;
+}
+.demo-entry h2, .demo-finish h2 { margin: 6px 0 8px; font-size: 1.2rem; line-height: 1.35; letter-spacing: -.03em; }
+.demo-entry > p:not(.demo-eyebrow), .demo-finish > p:not(.hint) { margin: 0 0 15px; font-size: .82rem; line-height: 1.6; }
+.demo-entry-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; text-decoration: none; }
+.demo-entry a:focus-visible, .demo-receipt a:focus-visible, .demo-receipt button:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 4px;
+}
+.demo-receipt [hidden] { display: none !important; }
+.demo-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
+.demo-top a { color: var(--ink); font-size: .8rem; padding: 10px 0; text-underline-offset: 3px; }
+.demo-badge { border: 1px solid var(--line); border-radius: 999px; padding: 6px 9px; color: #615649; font-size: .65rem; white-space: nowrap; }
+.demo-header { text-align: left; }
+.demo-header h1 { font-size: 1.85rem; letter-spacing: -.045em; line-height: 1.15; }
+.demo-header .sub { margin-bottom: 0; font-size: .68rem; }
+.demo-disclaimer { color: var(--ink-soft); font-size: .75rem; line-height: 1.6; margin: 12px 0 18px; }
+.demo-guide { background: #f8eee4; border-left: 3px solid #995d37; border-radius: 0 10px 10px 0; padding: 12px 14px; margin-bottom: 22px; }
+.demo-guide h2 { margin: 5px 0 4px; font-size: .95rem; line-height: 1.4; }
+.demo-guide > p:last-child { margin: 0; font-size: .77rem; line-height: 1.6; }
+.demo-people { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.demo-people .chip { min-width: 0; min-height: 48px; justify-content: center; border-radius: 10px; padding: 8px 6px; }
+.demo-people .chip.active { transform: none; box-shadow: none; }
+.demo-people .chip .dot { width: 9px; height: 9px; }
+.demo-left { text-align: left; }
+.demo-person-help { margin: 0 0 8px; }
+.demo-selection {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--paper);
+  padding: 10px 0 12px;
+}
+.demo-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0 0;
+  padding: 13px 12px;
+  background: var(--ink);
+  border-radius: 10px;
+  color: #fffdf7;
+  box-shadow: 0 3px 9px #14161b18;
+}
+.demo-current .demo-eyebrow { color: #fffdf7; display: block; }
+.demo-current .demo-eyebrow strong { font-size: .8rem; }
+.demo-current-note { display: block; font-size: .65rem; color: #dfdbcf; line-height: 1.5; margin-top: 3px; }
+.demo-next-step { margin: 8px 0 0; font-size: .7rem; color: #615649; line-height: 1.5; }
+#demoActiveAmount { font-size: 1.2rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.demo-items { display: grid; gap: 7px; }
+.demo-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 76px;
+  padding: 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+  scroll-margin-top: 215px;
+}
+.demo-item[aria-pressed="true"] { border: 2px solid #8b4736; background: #fdf0ec; padding: 11px 9px; }
+.demo-item:hover { border-color: #8b4736; }
+.demo-item-mark { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid #9e978a; border-radius: 50%; font-size: .95rem; }
+.demo-item[aria-pressed="true"] .demo-item-mark { background: #8b4736; border-color: #8b4736; color: #fff; }
+.demo-item-name { display: block; font-size: .85rem; font-weight: 700; line-height: 1.4; }
+.demo-item-detail, .demo-item-share { display: block; margin-top: 3px; font-size: .68rem; color: #615649; line-height: 1.45; }
+.demo-item-price { font-size: .85rem; font-weight: 700; white-space: nowrap; align-self: start; padding-top: 3px; font-variant-numeric: tabular-nums; }
+.demo-unclaimed { display: flex; justify-content: space-between; align-items: center; gap: 14px; border: 1px dashed #9c7a4a; border-radius: 10px; padding: 12px; margin: 17px 0 24px; color: #705126; font-size: .77rem; line-height: 1.5; }
+.demo-unclaimed strong { white-space: nowrap; }
+.demo-unclaimed.complete { color: #286332; border-color: #286332; background: #f0f6ed; }
+.demo-person-total { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--pc); border-radius: 0 10px 10px 0; background: #fff; }
+.demo-person-total h3 { display: flex; justify-content: space-between; gap: 12px; margin: 0; font-size: .9rem; }
+.demo-person-items { font-size: .72rem; color: var(--ink-soft); line-height: 1.5; margin: 7px 0; }
+.demo-breakdown { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0; padding-top: 8px; border-top: 1px dashed var(--line); font-size: .65rem; }
+.demo-breakdown dt { color: var(--ink-soft); margin-bottom: 3px; }
+.demo-breakdown dd { margin: 0; font-variant-numeric: tabular-nums; }
+.demo-reset { min-height: 44px; padding: 10px; margin: 12px auto 0; }
+.demo-finish { margin-top: 20px; }
+.demo-finish .btn { text-align: center; text-decoration: none; font-size: .9rem; }
+.demo-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (max-width: 370px) {
+  .demo-entry { padding: 14px; }
+  .demo-entry-link { font-size: .9rem; padding: 13px 12px; }
+  .demo-current { padding: 12px 10px; gap: 8px; }
+  .demo-current-note { max-width: 155px; }
+  .demo-item { gap: 7px; padding: 11px 8px; }
+  .demo-item[aria-pressed="true"] { padding: 10px 7px; }
+  .demo-item-name, .demo-item-price { font-size: .8rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .demo-receipt .chip { transition: none; }
+}
+@media (max-height: 560px) {
+  .demo-selection { position: static; }
+}

@@ -1,0 +1,11 @@
+# Copy to test/fixtures/.dev.vars (gitignored). Sandbox credentials only.
+# These placeholders cannot authenticate; use random local session/control secrets.
+BASE_URL=http://127.0.0.1:8790
+SESSION_SECRET=replace-with-a-random-local-session-secret
+TEST_CONTROL_TOKEN=replace-with-a-different-random-control-secret
+STRIPE_SECRET_KEY=rk_test_replace_with_sandbox_key
+STRIPE_WEBHOOK_SECRET=whsec_replace_with_stripe_listen_secret
+STRIPE_PRODUCT_ID=prod_replace_with_sandbox_product
+STRIPE_PRICE_ID=price_replace_with_sandbox_monthly_price
+# Optional: needed only for interactive portal tests.
+STRIPE_PORTAL_CONFIGURATION_ID=bpc_replace_with_sandbox_portal_configuration

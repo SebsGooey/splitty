@@ -4,7 +4,7 @@
 // Durable Objects, WebSockets, alarms and asset routing are the real thing.
 //
 //   npm run dev            # in one terminal (needs SESSION_SECRET in .dev.vars)
-//   npm test               # in another — or: BASE_URL=... node test/integration.mjs
+//   npm test               # in another — or: BASE_URL=http://127.0.0.1:PORT node test/integration.mjs
 //
 // The session cookie is minted locally with the same HMAC scheme the Worker
 // uses, so the tests exercise the signed-in path without touching Google.
@@ -16,7 +16,14 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const BASE = process.env.BASE_URL || "http://127.0.0.1:8787";
+// This suite creates/deletes accounts and bills. Never run it on production or
+// a preview with real billing; reject unsafe targets before any HTTP request.
+const target = new URL(process.env.BASE_URL || "http://127.0.0.1:8787");
+if (!["http:", "https:"].includes(target.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) ||
+    target.username || target.password || target.pathname !== "/" || target.search || target.hash) {
+  throw new Error("Integration tests require a loopback HTTP origin with no credentials, path, query or fragment. Use local wrangler dev.");
+}
+const BASE = target.origin;
 const SECRET = process.env.SESSION_SECRET || "dev-secret-for-local-tests-only";
 const WS_BASE = BASE.replace(/^http/, "ws");
 
@@ -34,6 +41,7 @@ function mintSession({ sub = "test-user", email = "admin@example.com", name = "T
 async function api(path, { method = "GET", body, cookie, headers = {} } = {}) {
   const res = await fetch(BASE + path, {
     method,
+    redirect: "error", // API requests must never follow a local redirect to another environment.
     headers: {
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
       ...(cookie ? { cookie } : {}),
@@ -519,30 +527,30 @@ test("settle up: paid marks are scoped, idempotent, survive lock, and die with t
   await a.next((m) => m.type === "state"); await b.next((m) => m.type === "state");
   a.send({ type: "join", name: "Ann" }); const ann = await a.next((m) => m.type === "joined");
   b.send({ type: "join", name: "Ben" }); const ben = await b.next((m) => m.type === "joined");
-  await a.stateWhere((s) => s.people.length === 2);
+  const joined = await a.stateWhere((s) => s.people.length === 2);
 
   // Ben can't mark Ann as paid; Ann can mark herself; the creator can mark Ben.
-  b.send({ type: "set_paid", personId: ann.personId, paid: true, token: ben.token });
+  b.send({ type: "set_paid", personId: ann.personId, paid: true, token: ben.token, expectedVersion: joined.version });
   assert.match((await b.next((m) => m.type === "error")).message, /only ann/i);
-  a.send({ type: "set_paid", personId: ann.personId, paid: true, token: ann.token });
+  a.send({ type: "set_paid", personId: ann.personId, paid: true, token: ann.token, expectedVersion: joined.version });
   const s1 = await b.stateWhere((s) => s.paid && s.paid[ann.personId]);
   assert.ok(typeof s1.paid[ann.personId] === "number");
 
   // Lock the bill — settling up still works.
   a.send({ type: "lock", locked: true, token: creatorToken });
-  await b.stateWhere((s) => s.locked);
-  a.send({ type: "set_paid", personId: ben.personId, paid: true, token: creatorToken });
+  const locked = await b.stateWhere((s) => s.locked);
+  a.send({ type: "set_paid", personId: ben.personId, paid: true, token: creatorToken, expectedVersion: locked.version });
   const s2 = await b.stateWhere((s) => s.paid[ben.personId]);
   const v = s2.version;
 
   // Replays are no-ops; an undo is a real change.
-  a.send({ type: "set_paid", personId: ben.personId, paid: true, token: creatorToken });
+  a.send({ type: "set_paid", personId: ben.personId, paid: true, token: creatorToken, expectedVersion: v });
   b.send({ type: "set_paid", personId: ben.personId, paid: false, token: ben.token });
   const s3 = await a.stateWhere((s) => s.version > v && !s.paid[ben.personId]);
   assert.equal(s3.version, v + 1, "a replayed set_paid must not bump the version");
 
   // Unknown person → error; removing Ann drops her paid mark.
-  a.send({ type: "set_paid", personId: "pnobody", paid: true, token: creatorToken });
+  a.send({ type: "set_paid", personId: "pnobody", paid: true, token: creatorToken, expectedVersion: s3.version });
   assert.match((await a.next((m) => m.type === "error")).message, /no longer exists/i);
   a.send({ type: "lock", locked: false, token: creatorToken });
   await b.stateWhere((s) => !s.locked);
@@ -891,6 +899,25 @@ if (process.argv.includes("--meter")) test("meter: per-IP create cap trips (30/d
 });
 
 // ---------- runner ----------
+
+// Configuration failures must stop the suite, not merely fail its first test
+// and continue into mutating cases. The config GET is read-only. Only after
+// those checks pass do we touch the local test account to verify the session.
+try {
+  const config = await api("/api/config");
+  assert.equal(config.status, 200, "local config endpoint must respond successfully");
+  assert.equal(config.data.authRequired, true, "Google/session auth must be enabled locally");
+  assert.equal(config.data.authMisconfigured, false, "local auth configuration must be complete");
+  assert.equal(config.data.billing?.enabled, false, "Stripe billing must be disabled for integration tests");
+  const session = await api("/api/me", { cookie: mintSession() });
+  assert.equal(session.status, 200, "local test session must be readable");
+  assert.equal(session.data.user?.email, "admin@example.com", "SESSION_SECRET must match the local worker");
+  assert.equal(session.data.account?.isAdmin, true, "local ADMIN_EMAILS must include admin@example.com");
+  assert.equal(session.data.billing?.enabled, false, "billing must remain disabled");
+} catch (error) {
+  console.error("Integration preflight blocked the suite: " + error.message);
+  process.exit(1);
+}
 
 let failed = 0;
 for (const t of tests) {

@@ -2,15 +2,18 @@
   "name": "splitty",
   "private": true,
   "version": "1.0.0",
-  "description": "Splitty — snap a receipt, share a link, split the bill in realtime",
+  "description": "Splitty \u2014 snap a receipt, share a link, split the bill in realtime",
   "scripts": {
     "dev": "wrangler dev",
-    "dev:reset": "node -e \"require('fs').rmSync('.wrangler/state',{recursive:true,force:true});console.log('local Durable Object state cleared — restart npm run dev')\"",
+    "dev:reset": "node -e \"require('fs').rmSync('.wrangler/state',{recursive:true,force:true});console.log('local Durable Object state cleared \u2014 restart npm run dev')\"",
     "test": "node test/integration.mjs",
     "test:billing": "node test/billing.mjs",
     "test:scans": "node test/scans.mjs",
     "test:meter": "node test/integration.mjs --meter",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test:onboarding": "node test/onboarding.mjs",
+    "test:settlement": "node test/settlement.mjs",
+    "test:stripe-sandbox": "node test/stripe-sandbox.mjs"
   },
   "devDependencies": {
     "wrangler": "^4"

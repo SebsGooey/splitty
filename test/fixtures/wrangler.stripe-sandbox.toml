@@ -1,0 +1,29 @@
+# Local lifecycle tests only. Production uses the root wrangler.toml.
+name = "splitty-sandbox-local"
+main = "stripe-clock-worker.js"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "../../public"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+GOOGLE_CLIENT_ID = "sandbox-local-client"
+DEV = "1"
+
+[[durable_objects.bindings]]
+name = "BILL_ROOM"
+class_name = "BillRoom"
+
+[[durable_objects.bindings]]
+name = "METER"
+class_name = "Meter"
+
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "Accounts"
+
+[[migrations]]
+tag = "sandbox-v1"
+new_sqlite_classes = ["BillRoom", "Meter", "Accounts"]

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Splitty · try a sample bill</title>
+<meta name="description" content="Try splitting a fictional dinner bill. Claim your meal, share the fries, and see everyone's total. No account needed.">
+<meta name="theme-color" content="#14161b">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/demo.css">
+<script src="/money.js" defer></script>
+<script src="/demo.js" defer></script>
+</head>
+<body>
+<main class="receipt demo-receipt">
+  <nav class="demo-top" aria-label="Demo navigation">
+    <a href="/">← Splitty</a>
+    <span class="demo-badge">Demo · no account</span>
+  </nav>
+  <header class="demo-header">
+    <h1>Dinner for three.</h1>
+    <p class="sub">MAPLE TABLE · SAMPLE RECEIPT · USD</p>
+  </header>
+  <p class="demo-disclaimer">A fictional bill to practice on. Your changes aren’t saved or shared, and there’s nothing to pay.</p>
+  <noscript><p class="banner info">Turn on JavaScript to try the sample, or <a href="/">return to Splitty</a>.</p></noscript>
+
+  <div id="demoInteractive" hidden>
+    <section class="demo-guide" aria-labelledby="demoGuideTitle">
+      <p class="demo-eyebrow">Give it a try</p>
+      <h2 id="demoGuideTitle">1. Claim your pasta</h2>
+      <p id="demoGuideText">You’re Alex. Tap Rigatoni below to claim it. Tap again to undo.</p>
+    </section>
+
+    <p class="hint demo-left demo-person-help" id="demoPersonHelp">In this demo you can try every seat. On a real bill, each friend claims their own items.</p>
+    <div class="demo-selection">
+      <section aria-labelledby="demoPeopleTitle">
+        <h2 class="section-label" id="demoPeopleTitle">Choose a person</h2>
+        <div id="demoPeople" class="demo-people" aria-label="Select whose items to claim"></div>
+      </section>
+      <div class="demo-current" aria-label="Selected person's running total">
+        <div><span class="demo-eyebrow">Claiming for <strong id="demoActiveName">Alex</strong></span><span class="demo-current-note">Total so far · includes tax + tip</span></div>
+        <strong id="demoActiveAmount">$0.00</strong>
+      </div>
+      <p class="demo-next-step" id="demoNextStep">Try: claim Rigatoni for Alex.</p>
+    </div>
+
+    <section aria-labelledby="demoItemsTitle">
+      <h2 class="section-label" id="demoItemsTitle">Tap what they had</h2>
+      <div id="demoItems" class="demo-items"></div>
+      <p class="hint demo-left">The price on the right is the whole item. Shared items split evenly; tap a claimed item again to undo.</p>
+    </section>
+
+    <hr class="rule">
+    <section aria-labelledby="demoReceiptTitle">
+      <h2 class="section-label" id="demoReceiptTitle">The whole bill</h2>
+      <div class="trow"><span class="lab">Items</span><span id="demoSubtotal"></span></div>
+      <div class="trow"><span class="lab">Tax</span><span id="demoTax"></span></div>
+      <div class="trow"><span class="lab">Tip · 20%</span><span id="demoTip"></span></div>
+      <div class="trow big"><span class="lab">Total</span><span id="demoBillTotal"></span></div>
+    </section>
+
+    <div class="demo-unclaimed" id="demoUnclaimed">
+      <span id="demoUnclaimedLabel">Left to claim, with tax + tip</span>
+      <strong id="demoUnclaimedAmount"></strong>
+    </div>
+
+    <section aria-labelledby="demoTotalsTitle">
+      <h2 class="section-label" id="demoTotalsTitle">Everyone’s total so far</h2>
+      <div id="demoPersonTotals"></div>
+      <p class="hint demo-left">Tax and tip follow each person’s share of the items. Any leftover cent is assigned so the totals always add up.</p>
+    </section>
+    <button class="linklike demo-reset" id="demoReset" type="button">Reset the sample</button>
+    <p id="demoAnnouncement" class="demo-sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+  </div>
+
+  <hr class="rule">
+  <section class="demo-finish" aria-labelledby="demoFinishTitle">
+    <h2 id="demoFinishTitle">Your next dinner, sorted.</h2>
+    <p>Sign in with Google to create a bill. Send the link, and friends claim their own items without an account.</p>
+    <a class="btn" href="/" id="demoCreateBill">Create your own free bill</a>
+    <p class="hint">3 manual bills per month, free.<br>Friends join without an account or app.</p>
+  </section>
+  <p class="footer-note"><a href="/terms">terms</a> · <a href="/privacy">privacy</a></p>
+</main>
+</body>
+</html>

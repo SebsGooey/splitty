@@ -132,13 +132,45 @@ function dropPersonClaims(bill, personId) {
   }
 }
 
+// Paid marks describe the allocation people saw when settling. Compare the
+// inputs to that allocation instead of duplicating the browser's money math.
+// A changed input conservatively clears ALL marks: shared items, tax/tip and
+// penny rounding can affect people other than the person making the change.
+// Names, item display order and payment-handle edits don't change an amount.
+function settlementBasis(bill) {
+  const people = new Set(bill.people.map((person) => person.id));
+  const subtotal = bill.items.reduce((sum, item) => sum + item.priceCents, 0);
+  const tip = bill.tip.mode === "percent" ? Math.round(subtotal * bill.tip.value / 100) : bill.tip.value;
+  const items = bill.items.map((item) => [item.id, item.qty || 1, item.priceCents,
+    // Keep claimant order: largest-remainder ties use that order for pennies.
+    Object.entries(bill.claims[item.id] || {}).filter(([id, units]) => people.has(id) && units > 0),
+  ]).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+  return JSON.stringify({ items, tax: bill.taxCents, tip,
+    // Free items with a fixed tax/tip split those fees equally among people,
+    // including nonclaimants. Ordinary zero-owed joins need no invalidation.
+    equalSplit: subtotal === 0 && (bill.taxCents > 0 || tip > 0) ? [...people] : [],
+    payee: bill.creatorPersonId || null,
+  });
+}
+
+function invalidatePaid(bill, before) {
+  if (before !== null && before !== settlementBasis(bill)) {
+    bill.paid = {};
+    // Persist the reason for disappearing marks across reconnects/reloads.
+    // This timestamp is never advanced for undo or cosmetic/no-op changes.
+    bill.paidResetAt = Math.max(Date.now(), (bill.paidResetAt || 0) + 1);
+  }
+}
+
 // Take a person off a bill entirely: their entry, claims, paid mark, and the
 // "this is the creator" tag if it was them.
 function removePersonFromBill(bill, personId) {
+  const before = Object.values(bill.paid || {}).some(Boolean) ? settlementBasis(bill) : null;
   bill.people = bill.people.filter((x) => x.id !== personId);
   dropPersonClaims(bill, personId);
   if (bill.paid) delete bill.paid[personId];
   if (bill.creatorPersonId === personId) delete bill.creatorPersonId;
+  invalidatePaid(bill, before);
 }
 
 // Accepts a bare bill id or a bill link (…/b/<id>, with or without #edit=…).
@@ -193,6 +225,7 @@ function publicBill(bill) {
     creatorTokenHash: undefined,
     pay: bill.pay || {},
     paid: bill.paid || {},
+    paidResetAt: bill.paidResetAt || null,
     people: bill.people.map(({ tokenHash, ...p }) => p),
   };
 }
@@ -1468,6 +1501,7 @@ export class Accounts {
 export class BillRoom {
   constructor(ctx) {
     this.ctx = ctx;
+    this.mutationTail = Promise.resolve();
     // Per-connection soft limits. In-memory only — reset on hibernation wake,
     // which is fine: they exist to blunt floods, not to be perfect accounting.
     this.buckets = new Map(); // ws -> { count, resetAt }
@@ -1501,7 +1535,31 @@ export class BillRoom {
     await this.ctx.storage.setAlarm(Date.now() + EXPIRY_MS);
   }
 
+  // Storage gates don't cover Web Crypto or request-body awaits. Serialize
+  // mutations for this bill so a delayed paid toggle cannot overwrite newer
+  // claims, and invalidation is saved together with the financial change.
+  async withMutationLock(action) {
+    const previous = this.mutationTail;
+    let release;
+    this.mutationTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try { return await action(); }
+    finally { release(); }
+  }
+
   async alarm() {
+    return this.withMutationLock(() => this.expireBill());
+  }
+
+  async expireBill() {
+    // An already-dispatched alarm can wait behind a mutation that renews the
+    // bill. Recheck its stored activity under the same lock before deleting it.
+    const bill = await this.loadBill();
+    const expiresAt = (bill?.lastActivity || bill?.createdAt || 0) + EXPIRY_MS;
+    if (bill && Date.now() < expiresAt) {
+      await this.ctx.storage.setAlarm(expiresAt);
+      return;
+    }
     // 90 days without activity: the bill self-destructs.
     for (const ws of this.ctx.getWebSockets()) {
       try {
@@ -1521,6 +1579,13 @@ export class BillRoom {
   }
 
   async fetch(request) {
+    if (request.method === "POST" && ["/init", "/delete", "/remove-person"].includes(new URL(request.url).pathname)) {
+      return this.withMutationLock(() => this.handleRequest(request));
+    }
+    return this.handleRequest(request);
+  }
+
+  async handleRequest(request) {
     const url = new URL(request.url);
 
     if (url.pathname === "/init" && request.method === "POST") {
@@ -1584,6 +1649,10 @@ export class BillRoom {
   // Class handler (Hibernation API) — never addEventListener. State is always
   // re-read from storage because in-memory state vanishes on hibernation.
   async webSocketMessage(ws, raw) {
+    return this.withMutationLock(() => this.handleMessage(ws, raw));
+  }
+
+  async handleMessage(ws, raw) {
     if (typeof raw !== "string" || raw.length > 100_000) return;
     let msg;
     try {
@@ -1618,6 +1687,8 @@ export class BillRoom {
     };
 
     let changed = false;
+    const settlementBefore = ["join", "set_claim", "edit_bill"].includes(msg.type) && Object.values(bill.paid || {}).some(Boolean)
+      ? settlementBasis(bill) : null;
 
     switch (msg.type) {
       case "join": {
@@ -1716,6 +1787,12 @@ export class BillRoom {
         if (!p) return send({ type: "error", message: "That person no longer exists." });
         if (!canActFor(p.id)) return send({ type: "error", message: `Only ${p.name} (or the creator) can mark that.` });
         const paid = Boolean(msg.paid);
+        // A retry cannot change an already-marked allocation. Financial edits
+        // clear the mark, so creating a new mark still needs the current view.
+        if (paid && bill.paid?.[p.id] && Number.isInteger(msg.expectedVersion) && msg.expectedVersion >= 1 && msg.expectedVersion <= bill.version) break;
+        if (paid && (!Number.isInteger(msg.expectedVersion) || msg.expectedVersion !== bill.version)) {
+          return send({ type: "error", message: "This bill changed or your page is out of date. Review the latest totals before marking paid; refresh if needed." });
+        }
         bill.paid = bill.paid || {};
         if (paid && !bill.paid[p.id]) {
           bill.paid[p.id] = Date.now();
@@ -1761,6 +1838,7 @@ export class BillRoom {
     }
 
     if (changed) {
+      invalidatePaid(bill, settlementBefore);
       await this.saveBill(bill);
       this.broadcast(bill);
     }
